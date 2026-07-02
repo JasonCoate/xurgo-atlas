@@ -63,6 +63,7 @@ COMMANDS:
     list
     show --project-id <id>
     default --project-id <id>
+    inspect-lifecycle --project-id <id> [--project-root <path>] [--json]
 
   mcp-config Print MCP client connection guidance (read-only)
     --host <host>           MCP server host (default: 127.0.0.1)
@@ -198,7 +199,7 @@ export async function main(): Promise<void> {
 
   const [
     { initCommand, printInitUsage, printServerUsage, printTemplateList, serverCommand, listCommand, historyCommand, exportCommand },
-    { parseProjectArgs, printProjectUsage, projectAddCommand, projectAdoptCommand, projectRemoveCommand, projectListCommand, projectShowCommand, projectDefaultCommand },
+    { parseProjectArgs, printProjectUsage, projectAddCommand, projectAdoptCommand, projectRemoveCommand, projectListCommand, projectShowCommand, projectDefaultCommand, projectInspectLifecycleCommand },
     { daemonCommand, getDaemonUsageText },
     { getStorageMigrationNotImplementedMessage, printStorageUsage, storageInspectCommand, storageMigrateCommand },
     { statusCommand, printStatusUsage },
@@ -289,12 +290,14 @@ export async function main(): Promise<void> {
         process.exit(0);
       }
 
-      emitStorageDiagnostics(
-        resolveStorageRoots({
-          configDir: projectConfigDir,
-          dataDir: projectDataDir,
-        }),
-      );
+      if (subcommand !== 'inspect-lifecycle') {
+        emitStorageDiagnostics(
+          resolveStorageRoots({
+            configDir: projectConfigDir,
+            dataDir: projectDataDir,
+          }),
+        );
+      }
 
       switch (subcommand) {
         case 'add': {
@@ -365,6 +368,21 @@ export async function main(): Promise<void> {
             projectConfigDir,
             projectDataDir,
           );
+          break;
+        }
+        case 'inspect-lifecycle': {
+          const pid = kwargs['project-id'];
+          if (!pid) {
+            console.error('Error: --project-id is required for project inspect-lifecycle');
+            process.exit(1);
+          }
+          await projectInspectLifecycleCommand({
+            projectId: pid,
+            projectRoot: kwargs['project-root'],
+            configDir: projectConfigDir,
+            dataDir: projectDataDir,
+            json: kwargs['json'] === 'true',
+          });
           break;
         }
         default: {

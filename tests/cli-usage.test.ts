@@ -1,4 +1,5 @@
 import { afterEach, describe, it, expect, vi } from 'vitest';
+import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -92,6 +93,69 @@ async function snapshotTree(root: string): Promise<string[]> {
     }
     throw error;
   }
+}
+
+async function snapshotFileHashes(root: string): Promise<Record<string, string>> {
+  const snapshot: Record<string, string> = {};
+
+  async function walk(current: string): Promise<void> {
+    const entries = await fs.promises.readdir(current, { withFileTypes: true });
+    entries.sort((a, b) => a.name.localeCompare(b.name));
+
+    for (const entry of entries) {
+      const fullPath = path.join(current, entry.name);
+      const relative = path.relative(root, fullPath);
+      if (entry.isDirectory()) {
+        await walk(fullPath);
+      } else if (entry.isFile()) {
+        snapshot[relative] = crypto.createHash('sha256')
+          .update(await fs.promises.readFile(fullPath))
+          .digest('hex');
+      }
+    }
+  }
+
+  try {
+    await walk(root);
+  } catch (error: unknown) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+      throw error;
+    }
+  }
+
+  return snapshot;
+}
+
+async function writeRegistry(configDir: string, dataDir: string, projectId: string, projectRoot: string): Promise<void> {
+  await fs.promises.mkdir(configDir, { recursive: true });
+  await fs.promises.writeFile(
+    path.join(configDir, 'projects.json'),
+    JSON.stringify({
+      version: 2,
+      configDir,
+      dataDir,
+      defaultProjectId: null,
+      projects: {
+        [projectId]: {
+          projectId,
+          projectRoot,
+          createdAt: '2026-01-01T00:00:00.000Z',
+          updatedAt: '2026-01-01T00:00:00.000Z',
+        },
+      },
+    }, null, 2) + '\n',
+    'utf-8',
+  );
+}
+
+async function writeMarker(projectRoot: string, projectId: string): Promise<void> {
+  const markerPath = path.join(projectRoot, '.xurgo-atlas', 'project.json');
+  await fs.promises.mkdir(path.dirname(markerPath), { recursive: true });
+  await fs.promises.writeFile(
+    markerPath,
+    JSON.stringify({ schemaVersion: 1, projectId }, null, 2) + '\n',
+    'utf-8',
+  );
 }
 
 async function runMainWithArgs(argv: string[]): Promise<{
@@ -345,6 +409,122 @@ describe('CLI usage text', () => {
     expect(output).toContain('Manage registered Xurgo Atlas projects.');
     expect(output).toContain('legacy roots auto-discovered');
     expect(output).toContain('xurgo-atlas project adopt --project-root /path/to/my-app --project-id my-app');
+  });
+
+  it('keeps dependent managed-state witnesses unavailable when the managed project directory is unavailable', async () => {
+    const root = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'xurgo-atlas-lifecycle-dependent-'));
+    const projectRoot = path.join(root, 'project');
+    const configDir = path.join(root, 'config');
+    const dataDir = path.join(root, 'data');
+    const projectId = 'alpha';
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+
+    try {
+      await fs.promises.mkdir(projectRoot, { recursive: true });
+      await writeRegistry(configDir, dataDir, projectId, projectRoot);
+      await writeMarker(projectRoot, projectId);
+      await fs.promises.mkdir(path.join(dataDir, 'projects'), { recursive: true });
+      await fs.promises.writeFile(path.join(dataDir, 'projects', projectId), 'not-a-directory', 'utf-8');
+      const before = await snapshotFileHashes(root);
+
+      const diagnostic = await projectCli.projectInspectLifecycleCommand({
+        projectId,
+        projectRoot,
+        configDir,
+        dataDir,
+        json: true,
+      });
+
+      expect(diagnostic.primaryStatus).toBe('evidence_unavailable');
+      expect(diagnostic.witnesses.managedProjectDirectory.rawObservation).toBe('unavailable_or_unreadable');
+      expect(diagnostic.witnesses.managedProjectDirectory.errorCategory).toBe('unsupported');
+
+      for (const id of ['managedGitStore', 'eventsDatabase', 'searchDatabase', 'rootLedger', 'recoveryEvidence']) {
+        expect(diagnostic.witnesses[id].rawObservation).toBe('unavailable_or_unreadable');
+        expect(diagnostic.witnesses[id].errorCategory).toBe('unsupported');
+        expect(diagnostic.witnesses[id].supportingWitnesses).toEqual(['managedProjectDirectory']);
+      }
+
+      expect(logSpy.mock.calls.flat().join('\n')).toContain('"command": "project.inspect-lifecycle"');
+      expect(await snapshotFileHashes(root)).toEqual(before);
+    } finally {
+      logSpy.mockRestore();
+      await fs.promises.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('preserves unavailable managed-state dependency chains under an available binding conflict', async () => {
+    const root = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'xurgo-atlas-lifecycle-conflict-'));
+    const projectRoot = path.join(root, 'project');
+    const configDir = path.join(root, 'config');
+    const dataDir = path.join(root, 'data');
+    const projectId = 'alpha';
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+
+    try {
+      await fs.promises.mkdir(projectRoot, { recursive: true });
+      await writeRegistry(configDir, dataDir, projectId, projectRoot);
+      await writeMarker(projectRoot, 'other-project');
+      await fs.promises.mkdir(path.join(dataDir, 'projects'), { recursive: true });
+      await fs.promises.writeFile(path.join(dataDir, 'projects', projectId), 'not-a-directory', 'utf-8');
+      const before = await snapshotFileHashes(root);
+
+      const diagnostic = await projectCli.projectInspectLifecycleCommand({
+        projectId,
+        projectRoot,
+        configDir,
+        dataDir,
+        json: true,
+      });
+
+      expect(diagnostic.primaryStatus).toBe('binding_conflict_observed');
+      expect(diagnostic.primaryStatusWitnesses).toEqual(['marker', 'canonicalProjectRoot']);
+
+      for (const id of ['managedGitStore', 'eventsDatabase', 'searchDatabase', 'rootLedger', 'recoveryEvidence']) {
+        expect(diagnostic.witnesses[id].rawObservation).toBe('unavailable_or_unreadable');
+        expect(diagnostic.witnesses[id].rawObservation).not.toBe('not_applicable');
+        expect(diagnostic.witnesses[id].errorCategory).toBe('unsupported');
+        expect(diagnostic.witnesses[id].supportingWitnesses).toEqual(['managedProjectDirectory']);
+      }
+
+      expect(await snapshotFileHashes(root)).toEqual(before);
+    } finally {
+      logSpy.mockRestore();
+      await fs.promises.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('preserves genuine not-applicable witnesses when the witness does not apply', async () => {
+    const root = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'xurgo-atlas-lifecycle-na-'));
+    const configDir = path.join(root, 'config');
+    const dataDir = path.join(root, 'data');
+    const originalCwd = process.cwd();
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+
+    try {
+      process.chdir(root);
+      const before = await snapshotFileHashes(root);
+
+      const diagnostic = await projectCli.projectInspectLifecycleCommand({
+        projectId: 'alpha',
+        configDir,
+        dataDir,
+        json: true,
+      });
+
+      expect(diagnostic.usedCurrentWorkingDirectory).toBe(true);
+      expect(diagnostic.requestedProjectRoot).toBeNull();
+      expect(diagnostic.witnesses.requestedProjectRoot.rawObservation).toBe('not_applicable');
+      expect(diagnostic.witnesses.requestedProjectRoot.errorCategory).toBeNull();
+      expect(diagnostic.witnesses.resolvedProjectRoot.rawObservation).toBe('present');
+      expect(diagnostic.witnesses.canonicalProjectRoot.rawObservation).toBe('present');
+      expect(diagnostic.primaryStatus).toBe('no_local_binding_observed');
+      expect(await snapshotFileHashes(root)).toEqual(before);
+    } finally {
+      process.chdir(originalCwd);
+      logSpy.mockRestore();
+      await fs.promises.rm(root, { recursive: true, force: true });
+    }
   });
 
   it('parses config-dir and data-dir for project subcommands', () => {
