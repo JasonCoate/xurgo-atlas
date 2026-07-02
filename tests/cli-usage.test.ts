@@ -250,6 +250,16 @@ describe('CLI usage text', () => {
     expect(output).toContain('xurgo-atlas project adopt --project-root /path/to/my-app --project-id my-app');
   });
 
+  it('lists project registration proposal as a diagnostic-only command', () => {
+    const output = getUsageText();
+    const projectOutput = getProjectUsageText();
+
+    expect(output).toContain('propose-registration [--project-root <path>] [--project-id <id>] [--json]');
+    expect(output).toContain('xurgo-atlas project propose-registration --project-root . --project-id my-app --json');
+    expect(projectOutput).toContain('Emit an ephemeral project-registration proposal (diagnostic-only, read-only)');
+    expect(projectOutput).toContain('cannot authorize registration, adoption, initialization, daemon binding, or writes');
+  });
+
   it('shows dedicated status help text', () => {
     const output = getStatusUsageText();
 

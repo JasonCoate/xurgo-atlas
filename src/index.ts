@@ -64,6 +64,7 @@ COMMANDS:
     show --project-id <id>
     default --project-id <id>
     inspect-lifecycle --project-id <id> [--project-root <path>] [--json]
+    propose-registration [--project-root <path>] [--project-id <id>] [--json]
 
   mcp-config Print MCP client connection guidance (read-only)
     --host <host>           MCP server host (default: 127.0.0.1)
@@ -99,6 +100,7 @@ EXAMPLES:
   xurgo-atlas project add --project-id my-app --project-root /path/to/my-app
   xurgo-atlas project adopt --project-root /path/to/my-app --project-id my-app
   xurgo-atlas project list
+  xurgo-atlas project propose-registration --project-root . --project-id my-app --json
   xurgo-atlas mcp-config
   xurgo-atlas mcp-config --json
   xurgo-atlas list
@@ -199,7 +201,7 @@ export async function main(): Promise<void> {
 
   const [
     { initCommand, printInitUsage, printServerUsage, printTemplateList, serverCommand, listCommand, historyCommand, exportCommand },
-    { parseProjectArgs, printProjectUsage, projectAddCommand, projectAdoptCommand, projectRemoveCommand, projectListCommand, projectShowCommand, projectDefaultCommand, projectInspectLifecycleCommand },
+    { parseProjectArgs, printProjectUsage, projectAddCommand, projectAdoptCommand, projectRemoveCommand, projectListCommand, projectShowCommand, projectDefaultCommand, projectInspectLifecycleCommand, projectProposeRegistrationCommand },
     { daemonCommand, getDaemonUsageText },
     { getStorageMigrationNotImplementedMessage, printStorageUsage, storageInspectCommand, storageMigrateCommand },
     { statusCommand, printStatusUsage },
@@ -290,7 +292,7 @@ export async function main(): Promise<void> {
         process.exit(0);
       }
 
-      if (subcommand !== 'inspect-lifecycle') {
+      if (subcommand !== 'inspect-lifecycle' && subcommand !== 'propose-registration') {
         emitStorageDiagnostics(
           resolveStorageRoots({
             configDir: projectConfigDir,
@@ -382,6 +384,17 @@ export async function main(): Promise<void> {
             configDir: projectConfigDir,
             dataDir: projectDataDir,
             json: kwargs['json'] === 'true',
+          });
+          break;
+        }
+        case 'propose-registration': {
+          await projectProposeRegistrationCommand({
+            projectId: kwargs['project-id'],
+            projectRoot: kwargs['project-root'],
+            configDir: projectConfigDir,
+            dataDir: projectDataDir,
+            json: kwargs['json'] === 'true',
+            cwd: process.cwd(),
           });
           break;
         }

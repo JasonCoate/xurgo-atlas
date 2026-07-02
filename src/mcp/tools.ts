@@ -36,6 +36,7 @@ import { buildRootLedgerIdentityKey } from '../core/root-ledger.js';
 import YAML from 'yaml';
 import { collectMarkdownHeadings, findMarkdownSection } from '../core/markdown.js';
 import { DocsSearchIndex } from '../core/docs-search.js';
+import { buildProjectRegistrationProposal } from '../core/project-registration-proposal.js';
 
 // ── Schemas ───────────────────────────────────────────────────────────
 
@@ -215,6 +216,14 @@ const AtlasProjectIdentitySchema = z.object({
   projectId: z.string().min(1, 'projectId is required').optional(),
 });
 
+const AtlasProjectRegistrationProposalSchema = z.object({
+  projectId: z.string().min(1, 'projectId is required').optional(),
+  projectRoot: z.string().min(1, 'projectRoot is required').optional(),
+  cwd: z.string().min(1, 'cwd is required').optional(),
+  configDir: z.string().min(1, 'configDir is required').optional(),
+  dataDir: z.string().min(1, 'dataDir is required').optional(),
+});
+
 // ── Tool Registration ────────────────────────────────────────────────
 
 /**
@@ -352,6 +361,12 @@ export function registerTools(
             'Return a compact read-only runtime identity and root-safety snapshot for the resolved Atlas project. Reports the active project/root binding, marker and Git identity, authoritative write safety, descriptive root-ledger/recovery warnings, and the recommended next step. Does not replace xurgo-atlas mcp-config --json.',
           inputSchema: zodToJsonSchema(AtlasProjectIdentitySchema),
         },
+        {
+          name: 'atlas.project_registration_proposal',
+          description:
+            'Emit an ephemeral diagnostic-only project-registration proposal for exactly one requested checkout/root context. Read-only and non-mutating: it does not register, reserve, initialize, adopt, bind a daemon, establish safeForWrites authority, or create stored proposal state.',
+          inputSchema: zodToJsonSchema(AtlasProjectRegistrationProposalSchema),
+        },
       ],
     };
   });
@@ -364,6 +379,10 @@ export function registerTools(
     try {
       if (name === 'docs.capabilities') {
         return handleCapabilities();
+      }
+
+      if (name === 'atlas.project_registration_proposal') {
+        return await handleAtlasProjectRegistrationProposal(rawArgs);
       }
 
       // Resolve the project for this request
@@ -3633,6 +3652,26 @@ async function handleAtlasProjectIdentity(
           null,
           2,
         ),
+      },
+    ],
+  };
+}
+
+async function handleAtlasProjectRegistrationProposal(rawArgs: Record<string, unknown>) {
+  const args = AtlasProjectRegistrationProposalSchema.parse(rawArgs);
+  const proposal = await buildProjectRegistrationProposal({
+    projectId: args.projectId,
+    projectRoot: args.projectRoot,
+    cwd: args.cwd,
+    configDir: args.configDir,
+    dataDir: args.dataDir,
+  });
+
+  return {
+    content: [
+      {
+        type: 'text',
+        text: JSON.stringify(proposal, null, 2),
       },
     ],
   };

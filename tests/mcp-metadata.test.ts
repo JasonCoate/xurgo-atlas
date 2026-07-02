@@ -296,7 +296,7 @@ describe('MCP server metadata', () => {
     });
   });
 
-  it('registers atlas.project_identity in tools/list', async () => {
+  it('registers atlas read-only tools in tools/list', async () => {
     const server = createMcpServer(async () => {
       throw new Error('not used');
     });
@@ -313,6 +313,7 @@ describe('MCP server metadata', () => {
       params: {},
     });
     const projectIdentityTool = result.tools.find((tool) => tool.name === 'atlas.project_identity');
+    const registrationProposalTool = result.tools.find((tool) => tool.name === 'atlas.project_registration_proposal');
     const managedStateProvenanceTool = result.tools.find((tool) => tool.name === 'atlas.managed_state_provenance');
     const projectRootsTool = result.tools.find((tool) => tool.name === 'atlas.project_roots');
     const lockStatusTool = result.tools.find((tool) => tool.name === 'atlas.lock_status');
@@ -321,16 +322,32 @@ describe('MCP server metadata', () => {
       .filter((name) => name.startsWith('atlas.'));
 
     expect(projectIdentityTool).toBeDefined();
+    expect(registrationProposalTool).toBeDefined();
     expect(managedStateProvenanceTool).toBeUndefined();
     expect(projectRootsTool).toBeUndefined();
     expect(lockStatusTool).toBeUndefined();
-    expect(atlasToolNames).toEqual(['atlas.project_identity']);
+    expect(atlasToolNames).toEqual([
+      'atlas.project_identity',
+      'atlas.project_registration_proposal',
+    ]);
     expect(projectIdentityTool?.description).toContain('read-only runtime identity');
     expect(projectIdentityTool?.description).toContain('mcp-config --json');
     expect(projectIdentityTool?.inputSchema).toMatchObject({
       type: 'object',
       properties: {
         projectId: { type: 'string' },
+      },
+    });
+    expect(registrationProposalTool?.description).toContain('ephemeral diagnostic-only');
+    expect(registrationProposalTool?.description).toContain('does not register');
+    expect(registrationProposalTool?.inputSchema).toMatchObject({
+      type: 'object',
+      properties: {
+        projectId: { type: 'string' },
+        projectRoot: { type: 'string' },
+        cwd: { type: 'string' },
+        configDir: { type: 'string' },
+        dataDir: { type: 'string' },
       },
     });
   });

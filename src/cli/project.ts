@@ -4,6 +4,10 @@ import { Registry } from '../core/registry.js';
 import { adoptProject, ProjectAdoptionError } from '../core/project-adoption.js';
 import { StoragePaths } from '../core/storage.js';
 import { inspectGitIdentity } from '../core/git-identity.js';
+import {
+  buildProjectRegistrationProposal,
+  type ProjectRegistrationProposal,
+} from '../core/project-registration-proposal.js';
 
 /**
  * Parse command-line args for `xurgo-atlas project <subcommand> [options]`.
@@ -87,6 +91,15 @@ SUBCOMMANDS:
     --config-dir <path>   Config directory (default: ~/.config/xurgo-atlas; overrides XURGO_ATLAS_CONFIG_DIR; legacy roots auto-discovered)
     --data-dir <path>     Data directory (default: ~/.local/share/xurgo-atlas; overrides XURGO_ATLAS_DATA_DIR; legacy roots auto-discovered)
 
+  propose-registration
+            Emit an ephemeral project-registration proposal (diagnostic-only, read-only)
+    --project-root <path> Checkout/root context to observe; defaults to current working directory
+    --project-id <id>     Optional requested project identifier
+    --json                Print output as machine-readable JSON only
+    --config-dir <path>   Config directory (default: ~/.config/xurgo-atlas; overrides XURGO_ATLAS_CONFIG_DIR; legacy roots auto-discovered)
+    --data-dir <path>     Data directory (default: ~/.local/share/xurgo-atlas; overrides XURGO_ATLAS_DATA_DIR; legacy roots auto-discovered)
+    The proposal is non-durable and cannot authorize registration, adoption, initialization, daemon binding, or writes.
+
 EXAMPLES:
   xurgo-atlas project add --project-id my-app --project-root /path/to/my-app
   xurgo-atlas project adopt --project-root /path/to/my-app --project-id my-app
@@ -95,6 +108,7 @@ EXAMPLES:
   xurgo-atlas project show --project-id my-app
   xurgo-atlas project default --project-id my-app
   xurgo-atlas project inspect-lifecycle --project-id my-app --project-root /path/to/my-app --json
+  xurgo-atlas project propose-registration --project-root /path/to/my-app --project-id my-app --json
 
 `;
 }
@@ -197,6 +211,48 @@ export async function projectDefaultCommand(projectId: string, configDir?: strin
     console.error(`❌ ${message}`);
     process.exit(1);
   }
+}
+
+export async function projectProposeRegistrationCommand(options: {
+  projectRoot?: string;
+  projectId?: string;
+  configDir?: string;
+  dataDir?: string;
+  json?: boolean;
+  cwd?: string;
+}): Promise<ProjectRegistrationProposal> {
+  const proposal = await buildProjectRegistrationProposal(options);
+
+  if (options.json) {
+    console.log(JSON.stringify(proposal, null, 2));
+  } else {
+    printRegistrationProposal(proposal);
+  }
+
+  return proposal;
+}
+
+function printRegistrationProposal(proposal: ProjectRegistrationProposal): void {
+  console.log('Xurgo Atlas project-registration proposal (diagnostic-only)');
+  console.log(`  observed at: ${proposal.observedAt}`);
+  console.log(`  project id: ${proposal.projectIdentity.projectId ?? 'unavailable'} (${proposal.projectIdentity.source})`);
+  console.log(`  requested root: ${proposal.root.requestedRoot}`);
+  console.log(`  canonical root: ${proposal.root.canonicalRoot ?? 'unavailable'}`);
+  console.log(`  git checkout root: ${proposal.git.worktreeRoot ?? 'unavailable'}`);
+  console.log(`  marker: ${proposal.marker.projectId ?? proposal.marker.readStatus}`);
+  console.log(`  registry: ${proposal.registry.collisionStatus}`);
+  console.log(`  daemon: ${proposal.daemon.status}`);
+  console.log(`  single checkout applicable: ${proposal.safety.singleCheckoutApplicable ? 'yes' : 'no'}`);
+  console.log(`  safe for writes observation: ${proposal.safety.safeForWrites ? 'yes' : 'no'}`);
+  if (proposal.safety.warnings.length > 0) {
+    console.log('  warnings:');
+    for (const warning of proposal.safety.warnings) {
+      console.log(`    - ${warning}`);
+    }
+  }
+  console.log('');
+  console.log(proposal.diagnosticOnly.statement);
+  console.log(proposal.nextRequiredAction);
 }
 
 type RawObservation = 'present' | 'absent' | 'unavailable_or_unreadable' | 'not_applicable';
