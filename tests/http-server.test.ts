@@ -7,6 +7,7 @@ import { Project } from '../src/core/project.js';
 import { Registry } from '../src/core/registry.js';
 import { createMcpServer } from '../src/mcp/create-server.js';
 import { startHttpServer } from '../src/mcp/http.js';
+import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 
 const PORT = 37376;
 
@@ -393,6 +394,82 @@ Next body.
       expect(errorSpy.mock.calls.some((call) => String(call[0]).includes('Request body:'))).toBe(false);
     } finally {
       errorSpy.mockRestore();
+    }
+  });
+
+  it('debug logging emits bounded metadata without raw request bodies', async () => {
+    const previousDebug = process.env.XURGO_ATLAS_DEBUG_MCP;
+    process.env.XURGO_ATLAS_DEBUG_MCP = '1';
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    try {
+      const res = await post('/mcp', {
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'tools/list',
+        params: {
+          authorization: 'Bearer secret-token-123',
+          documentBody: '# Confidential notes',
+          patch: 'diff --git a/file.md b/file.md',
+        },
+      });
+
+      expect(res.status).not.toBe(404);
+      const output = errorSpy.mock.calls.flat().map((value) => String(value)).join('\n');
+
+      expect(output).toContain('"component":"mcp-http"');
+      expect(output).toContain('"eventCode":"MCP_REQUEST_RECEIVED"');
+      expect(output).toContain('"eventCode":"MCP_REQUEST_HANDLED"');
+      expect(output).not.toContain('secret-token-123');
+      expect(output).not.toContain('documentBody');
+      expect(output).not.toContain('diff --git');
+      expect(output).not.toContain('Confidential notes');
+    } finally {
+      errorSpy.mockRestore();
+      if (previousDebug === undefined) {
+        delete process.env.XURGO_ATLAS_DEBUG_MCP;
+      } else {
+        process.env.XURGO_ATLAS_DEBUG_MCP = previousDebug;
+      }
+    }
+  });
+
+  it('debug logging sanitizes transport errors without leaking request content', async () => {
+    const previousDebug = process.env.XURGO_ATLAS_DEBUG_MCP;
+    process.env.XURGO_ATLAS_DEBUG_MCP = '1';
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const handleRequestSpy = vi.spyOn(StreamableHTTPServerTransport.prototype, 'handleRequest').mockImplementationOnce(async () => {
+      throw new Error('transport failure with token=abc123 and patch @@ secret');
+    });
+
+    try {
+      const res = await post('/mcp', {
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'tools/list',
+        params: {
+          authorization: 'Bearer another-secret-token',
+          patch: 'diff --git a/alpha.md b/alpha.md',
+        },
+      });
+
+      expect(res.status).toBe(500);
+      const output = errorSpy.mock.calls.flat().map((value) => String(value)).join('\n');
+
+      expect(output).toContain('"eventCode":"MCP_REQUEST_FAILED"');
+      expect(output).toContain('"errorCategory":"Error"');
+      expect(output).not.toContain('token=abc123');
+      expect(output).not.toContain('another-secret-token');
+      expect(output).not.toContain('patch @@ secret');
+      expect(output).not.toContain('alpha.md');
+    } finally {
+      handleRequestSpy.mockRestore();
+      errorSpy.mockRestore();
+      if (previousDebug === undefined) {
+        delete process.env.XURGO_ATLAS_DEBUG_MCP;
+      } else {
+        process.env.XURGO_ATLAS_DEBUG_MCP = previousDebug;
+      }
     }
   });
 

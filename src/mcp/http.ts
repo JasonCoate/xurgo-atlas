@@ -45,15 +45,61 @@ const DEFAULT_ALLOWED_ORIGINS: ReadonlyArray<string | RegExp> = [
 ];
 
 const MCP_DEBUG_LOG_ENV_VAR = 'XURGO_ATLAS_DEBUG_MCP';
+const MCP_LOG_COMPONENT = 'mcp-http';
+
+let mcpRequestCounter = 0;
 
 function isVerboseMcpLoggingEnabled(): boolean {
   return process.env[MCP_DEBUG_LOG_ENV_VAR] === '1';
 }
 
-function logMcpDebug(...args: unknown[]): void {
+function nextMcpCorrelationId(): string {
+  mcpRequestCounter += 1;
+  return `mcp-${process.pid}-${mcpRequestCounter}`;
+}
+
+function logMcpJson(event: {
+  severity: 'debug' | 'info' | 'warn' | 'error';
+  eventCode: string;
+  correlationId: string;
+  errorCategory?: string;
+  request?: Record<string, string | number | boolean | null | undefined>;
+}): void {
+  console.error(
+    JSON.stringify({
+      timestamp: new Date().toISOString(),
+      component: MCP_LOG_COMPONENT,
+      ...event,
+    }),
+  );
+}
+
+function logMcpDebug(event: Parameters<typeof logMcpJson>[0]): void {
   if (isVerboseMcpLoggingEnabled()) {
-    console.error(...args);
+    logMcpJson(event);
   }
+}
+
+function logMcpEvent(event: Parameters<typeof logMcpJson>[0]): void {
+  logMcpJson(event);
+}
+
+function getMcpRequestSummary(req: { method: string; path: string; body: unknown; headers: http.IncomingHttpHeaders }): Record<string, string | number | boolean | null | undefined> {
+  return {
+    method: req.method,
+    path: req.path,
+    originPresent: typeof req.headers.origin === 'string',
+    contentLength: typeof req.headers['content-length'] === 'string' ? Number(req.headers['content-length']) : null,
+    hasBody: req.body !== undefined && req.body !== null,
+    bodyKind: Array.isArray(req.body) ? 'array' : typeof req.body,
+  };
+}
+
+function categorizeMcpError(err: unknown): string {
+  if (err instanceof Error && err.name) {
+    return err.name;
+  }
+  return typeof err;
 }
 
 // ── Minimal read-only UI assets ───────────────────────────────────────
@@ -987,14 +1033,30 @@ export async function startHttpServer(
     // Create a new MCP server and transport for each request (stateless)
     let server: Server | undefined;
     let transport: StreamableHTTPServerTransport | undefined;
+    const correlationId = nextMcpCorrelationId();
     
     try {
-      logMcpDebug('MCP endpoint hit', req.method, req.path, req.headers.origin);
+      logMcpDebug({
+        severity: 'debug',
+        eventCode: 'MCP_REQUEST_RECEIVED',
+        correlationId,
+        request: getMcpRequestSummary(req),
+      });
       
       // Validate Origin
       const origin = req.headers.origin as string | undefined;
       if (!isOriginAllowed(origin, allowedOrigins)) {
-        console.error(`Origin not allowed: ${origin}`);
+        logMcpEvent({
+          severity: 'warn',
+          eventCode: 'MCP_ORIGIN_REJECTED',
+          correlationId,
+          errorCategory: 'origin_not_allowed',
+          request: {
+            method: req.method,
+            path: req.path,
+            originPresent: typeof origin === 'string',
+          },
+        });
         // Do not set CORS headers for disallowed origin
         res.status(403).json({
           jsonrpc: '2.0',
@@ -1003,8 +1065,16 @@ export async function startHttpServer(
         return;
       }
       
-      logMcpDebug('Origin validation passed, origin:', origin);
-      logMcpDebug('Request body:', req.body);
+      logMcpDebug({
+        severity: 'debug',
+        eventCode: 'MCP_ORIGIN_ACCEPTED',
+        correlationId,
+        request: {
+          method: req.method,
+          path: req.path,
+          originPresent: typeof origin === 'string',
+        },
+      });
 
       // Create new MCP server and transport for this request
       server = createMcpServer();
@@ -1017,11 +1087,19 @@ export async function startHttpServer(
       
       // Handle the MCP request
       await transport.handleRequest(req, res, req.body);
-      logMcpDebug('MCP request handled successfully');
+      logMcpDebug({
+        severity: 'debug',
+        eventCode: 'MCP_REQUEST_HANDLED',
+        correlationId,
+      });
       
       // Close transport and server when response closes
       res.on('close', async () => {
-        logMcpDebug('Response closed, cleaning up');
+        logMcpDebug({
+          severity: 'debug',
+          eventCode: 'MCP_RESPONSE_CLOSED',
+          correlationId,
+        });
         try {
           if (transport) await transport.close();
         } catch (e) {
@@ -1034,7 +1112,12 @@ export async function startHttpServer(
         }
       });
     } catch (err) {
-      console.error('Error in MCP endpoint:', err);
+      logMcpEvent({
+        severity: 'error',
+        eventCode: 'MCP_REQUEST_FAILED',
+        correlationId,
+        errorCategory: categorizeMcpError(err),
+      });
       if (!res.headersSent) {
         res.status(500).json({
           jsonrpc: '2.0',
