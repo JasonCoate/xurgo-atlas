@@ -36,6 +36,69 @@ export interface StoredProposal {
   metadata: ProposalMetadata | null;
 }
 
+export interface ArtifactRegistrationDescriptorProvenance {
+  adapterId: string;
+  discoveryStatus: 'present';
+  present: true;
+  projectRelativePath: string;
+  toolNativeRootId: string;
+  artifactClass: string;
+  capabilityTier: string;
+  source: 'harness_discovery_catalog';
+}
+
+export interface ArtifactRegistrationProposalPayload {
+  proposalId: string;
+  kind: 'artifact_registration';
+  schemaVersion: 1;
+  projectId: string;
+  branch: string;
+  descriptor: ArtifactRegistrationDescriptorProvenance;
+  canonicalProjectRoot: string;
+  projectRelativePath: string;
+  manifestPath: 'docs/manifest.yml';
+  manifestBaseRevision: string;
+  proposedArtifactEntry: Record<string, unknown>;
+  changedFiles: string[];
+  patch: string;
+  status: 'pending';
+  staleBase: false;
+  approvalEstablished: false;
+  commitAuthorized: false;
+  prohibitedImplications: string[];
+  preview: {
+    status: 'review_only';
+    diff: string;
+    manifestBaseRevision: string;
+    staleBase: false;
+  };
+  nextStep: string;
+  createdAt: string;
+}
+
+export interface StoredArtifactRegistrationProposal {
+  id: string;
+  project_id: string;
+  branch: string;
+  kind: 'artifact_registration';
+  schema_version: 1;
+  adapter_id: string;
+  tool_native_root_id: string;
+  canonical_project_root: string;
+  project_relative_path: string;
+  manifest_path: 'docs/manifest.yml';
+  manifest_base_revision: string;
+  proposed_entry: Record<string, unknown>;
+  changed_files: string[];
+  patch: string;
+  status: 'pending' | 'committed' | 'rejected' | 'stale' | 'discarded';
+  approval_established: false;
+  commit_authorized: false;
+  prohibited_implications: string[];
+  created_at: string;
+  payload: ArtifactRegistrationProposalPayload;
+}
+
 export interface ProposalRecoveryMetadata {
   rootIdentityKey: string;
   canonicalProjectRoot: string;
@@ -132,6 +195,30 @@ export class EventLog {
         metadata_json TEXT
       )
     `);
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS artifact_registration_proposals (
+        id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL,
+        branch TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        schema_version INTEGER NOT NULL,
+        adapter_id TEXT NOT NULL,
+        tool_native_root_id TEXT NOT NULL,
+        canonical_project_root TEXT NOT NULL,
+        project_relative_path TEXT NOT NULL,
+        manifest_path TEXT NOT NULL,
+        manifest_base_revision TEXT NOT NULL,
+        proposed_entry_json TEXT NOT NULL,
+        changed_files_json TEXT NOT NULL,
+        patch TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'pending',
+        approval_established INTEGER NOT NULL DEFAULT 0,
+        commit_authorized INTEGER NOT NULL DEFAULT 0,
+        prohibited_implications_json TEXT NOT NULL,
+        payload_json TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      )
+    `);
     this.ensureEventColumns();
     this.ensureProposalColumns();
     this.db.exec(`
@@ -139,6 +226,14 @@ export class EventLog {
     `);
     this.db.exec(`
       CREATE INDEX IF NOT EXISTS idx_doc_proposals_project ON doc_proposals(project_id)
+    `);
+    this.db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_artifact_registration_proposals_project
+      ON artifact_registration_proposals(project_id)
+    `);
+    this.db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_artifact_registration_proposals_status
+      ON artifact_registration_proposals(status)
     `);
   }
 
@@ -306,6 +401,115 @@ export class EventLog {
 
     const rows = stmt.all(...params) as Array<Record<string, unknown>>;
     return rows.map((row) => mapStoredProposalRow(row));
+  }
+
+  storeArtifactRegistrationProposal(proposal: {
+    project_id: string;
+    branch: string;
+    adapter_id: string;
+    tool_native_root_id: string;
+    canonical_project_root: string;
+    project_relative_path: string;
+    manifest_path: 'docs/manifest.yml';
+    manifest_base_revision: string;
+    proposed_entry: Record<string, unknown>;
+    changed_files: string[];
+    patch: string;
+    prohibited_implications: string[];
+    payload: Omit<ArtifactRegistrationProposalPayload, 'proposalId' | 'createdAt'>;
+  }): StoredArtifactRegistrationProposal {
+    const id = `artreg_${crypto.randomUUID().slice(0, 8)}`;
+    const createdAt = new Date().toISOString();
+    const payload: ArtifactRegistrationProposalPayload = {
+      ...proposal.payload,
+      proposalId: id,
+      createdAt,
+    };
+
+    const stmt = this.db.prepare(`
+      INSERT INTO artifact_registration_proposals (
+        id, project_id, branch, kind, schema_version, adapter_id,
+        tool_native_root_id, canonical_project_root, project_relative_path,
+        manifest_path, manifest_base_revision, proposed_entry_json,
+        changed_files_json, patch, status, approval_established,
+        commit_authorized, prohibited_implications_json, payload_json,
+        created_at
+      )
+      VALUES (?, ?, ?, 'artifact_registration', 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, 0, ?, ?, ?)
+    `);
+
+    stmt.run(
+      id,
+      proposal.project_id,
+      proposal.branch,
+      proposal.adapter_id,
+      proposal.tool_native_root_id,
+      proposal.canonical_project_root,
+      proposal.project_relative_path,
+      proposal.manifest_path,
+      proposal.manifest_base_revision,
+      JSON.stringify(proposal.proposed_entry),
+      JSON.stringify(proposal.changed_files),
+      proposal.patch,
+      JSON.stringify(proposal.prohibited_implications),
+      JSON.stringify(payload),
+      createdAt,
+    );
+
+    return {
+      id,
+      project_id: proposal.project_id,
+      branch: proposal.branch,
+      kind: 'artifact_registration',
+      schema_version: 1,
+      adapter_id: proposal.adapter_id,
+      tool_native_root_id: proposal.tool_native_root_id,
+      canonical_project_root: proposal.canonical_project_root,
+      project_relative_path: proposal.project_relative_path,
+      manifest_path: proposal.manifest_path,
+      manifest_base_revision: proposal.manifest_base_revision,
+      proposed_entry: proposal.proposed_entry,
+      changed_files: proposal.changed_files,
+      patch: proposal.patch,
+      status: 'pending',
+      approval_established: false,
+      commit_authorized: false,
+      prohibited_implications: proposal.prohibited_implications,
+      created_at: createdAt,
+      payload,
+    };
+  }
+
+  getArtifactRegistrationProposal(
+    id: string,
+  ): StoredArtifactRegistrationProposal | null {
+    const stmt = this.db.prepare(
+      'SELECT * FROM artifact_registration_proposals WHERE id = ?',
+    );
+    const row = stmt.get(id) as Record<string, unknown> | undefined;
+    if (!row) return null;
+
+    return mapStoredArtifactRegistrationProposalRow(row);
+  }
+
+  listArtifactRegistrationProposals(filters: {
+    projectId: string;
+    status?: StoredArtifactRegistrationProposal['status'] | 'all';
+  }): StoredArtifactRegistrationProposal[] {
+    const conditions: string[] = ['project_id = ?'];
+    const params: string[] = [filters.projectId];
+
+    if (filters.status && filters.status !== 'all') {
+      conditions.push('status = ?');
+      params.push(filters.status);
+    }
+
+    const stmt = this.db.prepare(
+      `SELECT * FROM artifact_registration_proposals WHERE ${conditions.join(' AND ')} ORDER BY created_at DESC`,
+    );
+
+    return (stmt.all(...params) as Array<Record<string, unknown>>)
+      .map((row) => mapStoredArtifactRegistrationProposalRow(row));
   }
 
   getLatestRecoveryObservation(
@@ -507,4 +711,68 @@ function mapStoredProposalRow(row: Record<string, unknown>): StoredProposal {
     discarded_at: (row.discarded_at as string) ?? null,
     metadata: parseProposalMetadata(row.metadata_json),
   };
+}
+
+function mapStoredArtifactRegistrationProposalRow(
+  row: Record<string, unknown>,
+): StoredArtifactRegistrationProposal {
+  return {
+    id: row.id as string,
+    project_id: row.project_id as string,
+    branch: row.branch as string,
+    kind: 'artifact_registration',
+    schema_version: 1,
+    adapter_id: row.adapter_id as string,
+    tool_native_root_id: row.tool_native_root_id as string,
+    canonical_project_root: row.canonical_project_root as string,
+    project_relative_path: row.project_relative_path as string,
+    manifest_path: row.manifest_path as 'docs/manifest.yml',
+    manifest_base_revision: row.manifest_base_revision as string,
+    proposed_entry: parseJsonObject(row.proposed_entry_json),
+    changed_files: parseJsonStringArray(row.changed_files_json),
+    patch: row.patch as string,
+    status: row.status as StoredArtifactRegistrationProposal['status'],
+    approval_established: false,
+    commit_authorized: false,
+    prohibited_implications: parseJsonStringArray(row.prohibited_implications_json),
+    created_at: row.created_at as string,
+    payload: parseArtifactRegistrationPayload(row.payload_json),
+  };
+}
+
+function parseJsonObject(raw: unknown): Record<string, unknown> {
+  if (typeof raw !== 'string') {
+    return {};
+  }
+
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : {};
+  } catch {
+    return {};
+  }
+}
+
+function parseJsonStringArray(raw: unknown): string[] {
+  if (typeof raw !== 'string') {
+    return [];
+  }
+
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    return Array.isArray(parsed) && parsed.every((item) => typeof item === 'string')
+      ? parsed
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+function parseArtifactRegistrationPayload(
+  raw: unknown,
+): ArtifactRegistrationProposalPayload {
+  const parsed = parseJsonObject(raw);
+  return parsed as unknown as ArtifactRegistrationProposalPayload;
 }

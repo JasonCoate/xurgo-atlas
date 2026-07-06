@@ -37,6 +37,10 @@ import YAML from 'yaml';
 import { collectMarkdownHeadings, findMarkdownSection } from '../core/markdown.js';
 import { DocsSearchIndex } from '../core/docs-search.js';
 import { buildProjectRegistrationProposal } from '../core/project-registration-proposal.js';
+import {
+  createArtifactRegistrationProposal,
+  parseArtifactManifestEntries,
+} from '../core/artifact-registration-proposal.js';
 
 // ── Schemas ───────────────────────────────────────────────────────────
 
@@ -224,6 +228,10 @@ const AtlasProjectRegistrationProposalSchema = z.object({
   dataDir: z.string().min(1, 'dataDir is required').optional(),
 });
 
+const AtlasProposeArtifactRegistrationSchema = z.object({
+  adapterId: z.string().min(1, 'adapterId is required'),
+}).strict();
+
 // ── Tool Registration ────────────────────────────────────────────────
 
 /**
@@ -367,6 +375,12 @@ export function registerTools(
             'Emit an ephemeral diagnostic-only project-registration proposal for exactly one requested checkout/root context. Read-only and non-mutating: it does not register, reserve, initialize, adopt, bind a daemon, establish safeForWrites authority, or create stored proposal state.',
           inputSchema: zodToJsonSchema(AtlasProjectRegistrationProposalSchema),
         },
+        {
+          name: 'atlas.propose_artifact_registration',
+          description:
+            'Create a stored review-only artifact_registration proposal for one present cataloged harness descriptor selected only by adapterId. Returns the proposed docs/manifest.yml artifacts[] diff and preview; does not approve, commit, write the manifest, activate artifacts, or authorize follow-on changes.',
+          inputSchema: zodToJsonSchema(AtlasProposeArtifactRegistrationSchema),
+        },
       ],
     };
   });
@@ -385,12 +399,20 @@ export function registerTools(
         return await handleAtlasProjectRegistrationProposal(rawArgs);
       }
 
+      if (name === 'atlas.propose_artifact_registration') {
+        AtlasProposeArtifactRegistrationSchema.parse(rawArgs);
+      }
+
       // Resolve the project for this request
       const project = await resolveProjectForRequest(
         rawArgs,
         isResolver,
         projectOrResolver,
       );
+
+      if (name === 'atlas.propose_artifact_registration') {
+        return await handleAtlasProposeArtifactRegistration(project, rawArgs);
+      }
 
       // Inject the resolved projectId into args if not present
       // (e.g., when a default project was resolved in daemon mode)
@@ -1035,6 +1057,32 @@ export async function handleProposeDocument(
           null,
           2,
         ),
+      },
+    ],
+  };
+}
+
+export async function handleAtlasProposeArtifactRegistration(
+  project: Project,
+  rawArgs: Record<string, unknown>,
+) {
+  const args = AtlasProposeArtifactRegistrationSchema.parse(rawArgs);
+  const rootSafety = await guardManagedWriteSafety(project, {
+    operation: 'atlas.propose_artifact_registration',
+  });
+  if (rootSafety) {
+    return rootSafety;
+  }
+
+  const proposal = await createArtifactRegistrationProposal(project, {
+    adapterId: args.adapterId,
+  });
+
+  return {
+    content: [
+      {
+        type: 'text',
+        text: JSON.stringify(proposal, null, 2),
       },
     ],
   };
@@ -3254,6 +3302,30 @@ export async function handleManifest(project: Project, rawArgs: Record<string, u
   // Extract documents and entrypoints (gracefully handle missing/malformed data)
   const documents: unknown[] = Array.isArray(parsed?.documents) ? parsed.documents as unknown[] : [];
   const entrypoints: unknown[] = Array.isArray(parsed?.entrypoints) ? parsed.entrypoints as unknown[] : [];
+  let artifacts: unknown[];
+  try {
+    artifacts = parseArtifactManifestEntries(parsed?.artifacts);
+  } catch (err) {
+    return {
+      content: [
+        {
+          type: 'text',
+          text: JSON.stringify(
+            {
+              error: 'Invalid artifacts[] in docs/manifest.yml',
+              projectId: project.projectId,
+              branch: args.branch,
+              path: manifestPath,
+              details: err instanceof Error ? err.message : String(err),
+            },
+            null,
+            2,
+          ),
+        },
+      ],
+      isError: true,
+    };
+  }
 
   // Apply maxDocuments truncation
   let truncated = false;
@@ -3271,6 +3343,10 @@ export async function handleManifest(project: Project, rawArgs: Record<string, u
   }
   for (const doc of processedDocuments) {
     const p = (doc as Record<string, unknown>)?.path;
+    if (typeof p === 'string' && p) allReferencedPaths.push(p);
+  }
+  for (const artifact of artifacts) {
+    const p = (artifact as Record<string, unknown>)?.path;
     if (typeof p === 'string' && p) allReferencedPaths.push(p);
   }
 
@@ -3294,8 +3370,10 @@ export async function handleManifest(project: Project, rawArgs: Record<string, u
     version: parsed?.version ?? null,
     entrypoints,
     documents: processedDocuments,
+    artifacts,
     documentCount: processedDocuments.length,
     totalDocumentCount: documents.length,
+    artifactCount: artifacts.length,
     truncated,
   };
 

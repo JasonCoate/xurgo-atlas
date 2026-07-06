@@ -329,6 +329,7 @@ describe('MCP server metadata', () => {
     expect(atlasToolNames).toEqual([
       'atlas.project_identity',
       'atlas.project_registration_proposal',
+      'atlas.propose_artifact_registration',
     ]);
     expect(projectIdentityTool?.description).toContain('read-only runtime identity');
     expect(projectIdentityTool?.description).toContain('mcp-config --json');
@@ -350,6 +351,47 @@ describe('MCP server metadata', () => {
         dataDir: { type: 'string' },
       },
     });
+  });
+
+  it('registers only the bounded proposal-only artifact registration tool', async () => {
+    const server = createMcpServer(async () => {
+      throw new Error('not used');
+    });
+
+    const handlers = (server as unknown as {
+      _requestHandlers: Map<string, (request: unknown) => Promise<{ tools: Array<{ name: string; description?: string; inputSchema: unknown }> }>>;
+    })._requestHandlers;
+    const listTools = handlers.get('tools/list');
+
+    expect(listTools).toBeTypeOf('function');
+
+    const result = await listTools!({
+      method: 'tools/list',
+      params: {},
+    });
+    const artifactToolNames = result.tools
+      .map((tool) => tool.name)
+      .filter((name) => name.includes('artifact'));
+    const proposalTool = result.tools.find(
+      (tool) => tool.name === 'atlas.propose_artifact_registration',
+    );
+
+    expect(artifactToolNames).toEqual(['atlas.propose_artifact_registration']);
+    expect(proposalTool).toBeDefined();
+    expect(proposalTool?.description).toContain('review-only');
+    expect(proposalTool?.description).toContain('does not approve');
+    expect(proposalTool?.description).toContain('write the manifest');
+    expect(proposalTool?.description).toContain('activate artifacts');
+    expect(proposalTool?.inputSchema).toMatchObject({
+      type: 'object',
+      required: ['adapterId'],
+      properties: {
+        adapterId: { type: 'string' },
+      },
+    });
+    expect(Object.keys((proposalTool?.inputSchema as { properties: Record<string, unknown> }).properties)).toEqual([
+      'adapterId',
+    ]);
   });
 
 });
