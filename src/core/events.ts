@@ -99,6 +99,29 @@ export interface StoredArtifactRegistrationProposal {
   payload: ArtifactRegistrationProposalPayload;
 }
 
+export interface ArtifactRegistrationCommitAudit {
+  proposal_id: string;
+  state: 'prepared' | 'finalized';
+  binding_fingerprint: string;
+  approval: 'APPROVE_ARTIFACT_REGISTRATION_COMMIT';
+  actor: string;
+  approved_at: string;
+  project_id: string;
+  canonical_project_root: string;
+  branch: string;
+  manifest_path: 'docs/manifest.yml';
+  prior_manifest_revision: string;
+  changed_files: string[];
+  artifact_identity: Record<string, unknown>;
+  committed_at: string | null;
+  commit_sha: string | null;
+  resulting_manifest_revision: string | null;
+  idempotency_state:
+    | 'prepared'
+    | 'applied_new'
+    | 'audit_reconciliation_required';
+}
+
 export interface ProposalRecoveryMetadata {
   rootIdentityKey: string;
   canonicalProjectRoot: string;
@@ -219,6 +242,27 @@ export class EventLog {
         created_at TEXT NOT NULL
       )
     `);
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS artifact_registration_commit_audits (
+        proposal_id TEXT PRIMARY KEY,
+        state TEXT NOT NULL,
+        binding_fingerprint TEXT NOT NULL,
+        approval TEXT NOT NULL,
+        actor TEXT NOT NULL,
+        approved_at TEXT NOT NULL,
+        project_id TEXT NOT NULL,
+        canonical_project_root TEXT NOT NULL,
+        branch TEXT NOT NULL,
+        manifest_path TEXT NOT NULL,
+        prior_manifest_revision TEXT NOT NULL,
+        changed_files_json TEXT NOT NULL,
+        artifact_identity_json TEXT NOT NULL,
+        committed_at TEXT,
+        commit_sha TEXT,
+        resulting_manifest_revision TEXT,
+        idempotency_state TEXT NOT NULL
+      )
+    `);
     this.ensureEventColumns();
     this.ensureProposalColumns();
     this.db.exec(`
@@ -234,6 +278,10 @@ export class EventLog {
     this.db.exec(`
       CREATE INDEX IF NOT EXISTS idx_artifact_registration_proposals_status
       ON artifact_registration_proposals(status)
+    `);
+    this.db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_artifact_registration_commit_audits_state
+      ON artifact_registration_commit_audits(state)
     `);
   }
 
@@ -512,6 +560,133 @@ export class EventLog {
       .map((row) => mapStoredArtifactRegistrationProposalRow(row));
   }
 
+  getArtifactRegistrationCommitAudit(
+    proposalId: string,
+  ): ArtifactRegistrationCommitAudit | null {
+    const row = this.db.prepare(
+      'SELECT * FROM artifact_registration_commit_audits WHERE proposal_id = ?',
+    ).get(proposalId) as Record<string, unknown> | undefined;
+
+    return row ? mapArtifactRegistrationCommitAuditRow(row) : null;
+  }
+
+  /**
+   * Persist the proposal-bound commit intent before touching managed Git state.
+   *
+   * The prepared row is intentionally not replaced. If a previous attempt made
+   * it this far, that row becomes the reconciliation anchor rather than a retry
+   * signal.
+   */
+  prepareArtifactRegistrationCommitAudit(audit: Omit<
+    ArtifactRegistrationCommitAudit,
+    'state' | 'committed_at' | 'commit_sha' | 'resulting_manifest_revision' | 'idempotency_state'
+  >): ArtifactRegistrationCommitAudit {
+    const prepared: ArtifactRegistrationCommitAudit = {
+      ...audit,
+      state: 'prepared',
+      committed_at: null,
+      commit_sha: null,
+      resulting_manifest_revision: null,
+      idempotency_state: 'prepared',
+    };
+
+    const stmt = this.db.prepare(`
+      INSERT INTO artifact_registration_commit_audits (
+        proposal_id, state, binding_fingerprint, approval, actor,
+        approved_at, project_id, canonical_project_root, branch,
+        manifest_path, prior_manifest_revision, changed_files_json,
+        artifact_identity_json, committed_at, commit_sha,
+        resulting_manifest_revision, idempotency_state
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?)
+    `);
+
+    stmt.run(
+      prepared.proposal_id,
+      prepared.state,
+      prepared.binding_fingerprint,
+      prepared.approval,
+      prepared.actor,
+      prepared.approved_at,
+      prepared.project_id,
+      prepared.canonical_project_root,
+      prepared.branch,
+      prepared.manifest_path,
+      prepared.prior_manifest_revision,
+      JSON.stringify(prepared.changed_files),
+      JSON.stringify(prepared.artifact_identity),
+      prepared.idempotency_state,
+    );
+
+    return prepared;
+  }
+
+  finalizeArtifactRegistrationCommitAudit(input: {
+    proposalId: string;
+    bindingFingerprint: string;
+    commitSha: string;
+    resultingManifestRevision: string;
+    committedAt?: string;
+  }): ArtifactRegistrationCommitAudit {
+    const committedAt = input.committedAt ?? new Date().toISOString();
+
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      const existing = this.getArtifactRegistrationCommitAudit(input.proposalId);
+      if (!existing) {
+        throw new Error(
+          `Artifact-registration commit audit for proposal "${input.proposalId}" is missing`,
+        );
+      }
+      if (existing.state !== 'prepared') {
+        throw new Error(
+          `Artifact-registration commit audit for proposal "${input.proposalId}" is already ${existing.state}`,
+        );
+      }
+      if (existing.binding_fingerprint !== input.bindingFingerprint) {
+        throw new Error(
+          `Artifact-registration commit audit binding mismatch for proposal "${input.proposalId}"`,
+        );
+      }
+
+      this.db.prepare(`
+        UPDATE artifact_registration_commit_audits
+        SET state = 'finalized',
+            committed_at = ?,
+            commit_sha = ?,
+            resulting_manifest_revision = ?,
+            idempotency_state = 'applied_new'
+        WHERE proposal_id = ?
+      `).run(
+        committedAt,
+        input.commitSha,
+        input.resultingManifestRevision,
+        input.proposalId,
+      );
+
+      this.db.prepare(`
+        UPDATE artifact_registration_proposals
+        SET status = 'committed'
+        WHERE id = ? AND status = 'pending'
+      `).run(input.proposalId);
+
+      this.db.exec('COMMIT');
+    } catch (error) {
+      try {
+        this.db.exec('ROLLBACK');
+      } catch { /* ignore rollback failures */ }
+      throw error;
+    }
+
+    const finalized = this.getArtifactRegistrationCommitAudit(input.proposalId);
+    if (!finalized) {
+      throw new Error(
+        `Artifact-registration commit audit for proposal "${input.proposalId}" disappeared after finalization`,
+      );
+    }
+    return finalized;
+  }
+
   getLatestRecoveryObservation(
     projectId: string,
     operation: RecoveryObservationMetadata['operation'],
@@ -720,8 +895,8 @@ function mapStoredArtifactRegistrationProposalRow(
     id: row.id as string,
     project_id: row.project_id as string,
     branch: row.branch as string,
-    kind: 'artifact_registration',
-    schema_version: 1,
+    kind: row.kind as 'artifact_registration',
+    schema_version: row.schema_version as 1,
     adapter_id: row.adapter_id as string,
     tool_native_root_id: row.tool_native_root_id as string,
     canonical_project_root: row.canonical_project_root as string,
@@ -775,4 +950,29 @@ function parseArtifactRegistrationPayload(
 ): ArtifactRegistrationProposalPayload {
   const parsed = parseJsonObject(raw);
   return parsed as unknown as ArtifactRegistrationProposalPayload;
+}
+
+function mapArtifactRegistrationCommitAuditRow(
+  row: Record<string, unknown>,
+): ArtifactRegistrationCommitAudit {
+  return {
+    proposal_id: row.proposal_id as string,
+    state: row.state as ArtifactRegistrationCommitAudit['state'],
+    binding_fingerprint: row.binding_fingerprint as string,
+    approval: row.approval as ArtifactRegistrationCommitAudit['approval'],
+    actor: row.actor as string,
+    approved_at: row.approved_at as string,
+    project_id: row.project_id as string,
+    canonical_project_root: row.canonical_project_root as string,
+    branch: row.branch as string,
+    manifest_path: row.manifest_path as 'docs/manifest.yml',
+    prior_manifest_revision: row.prior_manifest_revision as string,
+    changed_files: parseJsonStringArray(row.changed_files_json),
+    artifact_identity: parseJsonObject(row.artifact_identity_json),
+    committed_at: (row.committed_at as string) ?? null,
+    commit_sha: (row.commit_sha as string) ?? null,
+    resulting_manifest_revision: (row.resulting_manifest_revision as string) ?? null,
+    idempotency_state:
+      row.idempotency_state as ArtifactRegistrationCommitAudit['idempotency_state'],
+  };
 }

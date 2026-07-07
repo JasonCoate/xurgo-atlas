@@ -330,6 +330,7 @@ describe('MCP server metadata', () => {
       'atlas.project_identity',
       'atlas.project_registration_proposal',
       'atlas.propose_artifact_registration',
+      'atlas.commit_artifact_registration',
     ]);
     expect(projectIdentityTool?.description).toContain('read-only runtime identity');
     expect(projectIdentityTool?.description).toContain('mcp-config --json');
@@ -353,7 +354,7 @@ describe('MCP server metadata', () => {
     });
   });
 
-  it('registers only the bounded proposal-only artifact registration tool', async () => {
+  it('registers only the bounded artifact registration proposal and commit tools', async () => {
     const server = createMcpServer(async () => {
       throw new Error('not used');
     });
@@ -375,8 +376,14 @@ describe('MCP server metadata', () => {
     const proposalTool = result.tools.find(
       (tool) => tool.name === 'atlas.propose_artifact_registration',
     );
+    const commitTool = result.tools.find(
+      (tool) => tool.name === 'atlas.commit_artifact_registration',
+    );
 
-    expect(artifactToolNames).toEqual(['atlas.propose_artifact_registration']);
+    expect(artifactToolNames).toEqual([
+      'atlas.propose_artifact_registration',
+      'atlas.commit_artifact_registration',
+    ]);
     expect(proposalTool).toBeDefined();
     expect(proposalTool?.description).toContain('review-only');
     expect(proposalTool?.description).toContain('does not approve');
@@ -392,6 +399,23 @@ describe('MCP server metadata', () => {
     expect(Object.keys((proposalTool?.inputSchema as { properties: Record<string, unknown> }).properties)).toEqual([
       'adapterId',
     ]);
+    expect(commitTool).toBeDefined();
+    expect(commitTool?.description).toContain('Commit exactly one pending stored artifact_registration proposal');
+    expect(commitTool?.description).toContain('does not accept caller-supplied branch');
+    expect(commitTool?.inputSchema).toMatchObject({
+      type: 'object',
+      required: ['proposalId', 'approval', 'actor', 'projectId'],
+      additionalProperties: false,
+      properties: {
+        proposalId: { type: 'string' },
+        approval: {
+          type: 'string',
+          enum: ['APPROVE_ARTIFACT_REGISTRATION_COMMIT'],
+        },
+        actor: { type: 'string' },
+        projectId: { type: 'string' },
+      },
+    });
   });
 
 });

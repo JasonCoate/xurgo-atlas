@@ -38,6 +38,7 @@ import { collectMarkdownHeadings, findMarkdownSection } from '../core/markdown.j
 import { DocsSearchIndex } from '../core/docs-search.js';
 import { buildProjectRegistrationProposal } from '../core/project-registration-proposal.js';
 import {
+  commitArtifactRegistrationProposal,
   createArtifactRegistrationProposal,
   parseArtifactManifestEntries,
 } from '../core/artifact-registration-proposal.js';
@@ -232,6 +233,28 @@ const AtlasProposeArtifactRegistrationSchema = z.object({
   adapterId: z.string().min(1, 'adapterId is required'),
 }).strict();
 
+const AtlasCommitArtifactRegistrationSchema = z.object({
+  proposalId: z.string().min(1),
+  approval: z.literal('APPROVE_ARTIFACT_REGISTRATION_COMMIT'),
+  actor: z.string().trim().min(1),
+  projectId: z.string().min(1),
+}).strict();
+
+const AtlasCommitArtifactRegistrationInputSchema = {
+  type: 'object',
+  properties: {
+    proposalId: { type: 'string' },
+    approval: {
+      type: 'string',
+      enum: ['APPROVE_ARTIFACT_REGISTRATION_COMMIT'],
+    },
+    actor: { type: 'string' },
+    projectId: { type: 'string' },
+  },
+  required: ['proposalId', 'approval', 'actor', 'projectId'],
+  additionalProperties: false,
+};
+
 // ── Tool Registration ────────────────────────────────────────────────
 
 /**
@@ -381,6 +404,12 @@ export function registerTools(
             'Create a stored review-only artifact_registration proposal for one present cataloged harness descriptor selected only by adapterId. Returns the proposed docs/manifest.yml artifacts[] diff and preview; does not approve, commit, write the manifest, activate artifacts, or authorize follow-on changes.',
           inputSchema: zodToJsonSchema(AtlasProposeArtifactRegistrationSchema),
         },
+        {
+          name: 'atlas.commit_artifact_registration',
+          description:
+            'Commit exactly one pending stored artifact_registration proposal to docs/manifest.yml artifacts[] after explicit approval, project/root safety, stale-base, manifest, patch, and durable audit gates. Accepts only proposalId, approval literal, nonempty actor, and projectId; it does not accept caller-supplied branch, manifest path, patch, entry, artifact details, status, or risk override.',
+          inputSchema: AtlasCommitArtifactRegistrationInputSchema,
+        },
       ],
     };
   });
@@ -403,6 +432,10 @@ export function registerTools(
         AtlasProposeArtifactRegistrationSchema.parse(rawArgs);
       }
 
+      if (name === 'atlas.commit_artifact_registration') {
+        AtlasCommitArtifactRegistrationSchema.parse(rawArgs);
+      }
+
       // Resolve the project for this request
       const project = await resolveProjectForRequest(
         rawArgs,
@@ -412,6 +445,10 @@ export function registerTools(
 
       if (name === 'atlas.propose_artifact_registration') {
         return await handleAtlasProposeArtifactRegistration(project, rawArgs);
+      }
+
+      if (name === 'atlas.commit_artifact_registration') {
+        return await handleAtlasCommitArtifactRegistration(project, rawArgs);
       }
 
       // Inject the resolved projectId into args if not present
@@ -1085,6 +1122,67 @@ export async function handleAtlasProposeArtifactRegistration(
         text: JSON.stringify(proposal, null, 2),
       },
     ],
+  };
+}
+
+export async function handleAtlasCommitArtifactRegistration(
+  project: Project,
+  rawArgs: Record<string, unknown>,
+) {
+  const args = AtlasCommitArtifactRegistrationSchema.parse(rawArgs);
+  const stored = project.eventLog.getArtifactRegistrationProposal(args.proposalId);
+
+  if (!stored) {
+    return {
+      content: [
+        {
+          type: 'text',
+          text: JSON.stringify({
+            error: `Artifact-registration proposal "${args.proposalId}" not found`,
+            projectId: project.projectId,
+            proposalId: args.proposalId,
+          }),
+        },
+      ],
+      isError: true,
+    };
+  }
+
+  if (args.projectId !== stored.project_id || args.projectId !== project.projectId) {
+    return {
+      content: [
+        {
+          type: 'text',
+          text: JSON.stringify({
+            error: `Project routing mismatch for artifact-registration proposal "${args.proposalId}"`,
+            proposalId: stored.id,
+            requestedProjectId: args.projectId,
+            storedProjectId: stored.project_id,
+            resolvedProjectId: project.projectId,
+          }),
+        },
+      ],
+      isError: true,
+    };
+  }
+
+  const rootSafety = await guardManagedWriteSafety(project, {
+    operation: 'atlas.commit_artifact_registration',
+  });
+  if (rootSafety) {
+    return rootSafety;
+  }
+
+  const result = await commitArtifactRegistrationProposal(project, args);
+
+  return {
+    content: [
+      {
+        type: 'text',
+        text: JSON.stringify(result, null, 2),
+      },
+    ],
+    isError: result.idempotency === 'audit_reconciliation_required' ? true : undefined,
   };
 }
 
