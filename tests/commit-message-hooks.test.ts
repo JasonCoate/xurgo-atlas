@@ -82,6 +82,15 @@ Explain the incompatible hook behavior because the commit workflow needs a clear
 Validation:
 - npm test`))
       .toContain('BREAKING CHANGE: footer');
+    expect(formatCommitMessageError(`feat(commit-hooks): tighten the hook contract
+
+Explain the incompatible hook behavior because the commit workflow needs a clearer delivery contract.
+
+Validation:
+- npm test
+
+BREAKING CHANGE: The local hook now requires a body and Validation section for delivery commits.`))
+      .toContain('Use both the ! marker in the header and a BREAKING CHANGE: footer when declaring a breaking change.');
     expect(formatCommitMessageError(validBreakingMessage))
       .toBeNull();
   });
