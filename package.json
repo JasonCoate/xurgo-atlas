@@ -27,6 +27,7 @@
     "verify:installed": "node scripts/happy-path-smoke.mjs",
     "bundle:private-rc": "node scripts/private-rc-artifact.mjs",
     "release:preflight": "node scripts/release-preflight.mjs",
+    "hooks:install": "node scripts/install-git-hooks.mjs",
     "prepublishOnly": "node -e \"if(process.env.npm_command==='publish'&&!process.env.XURGO_ATLAS_PUBLISH){console.error('PUBLISH BLOCKED: set XURGO_ATLAS_PUBLISH=1 to publish');process.exit(1)}\" && npm run build"
   },
   "dependencies": {

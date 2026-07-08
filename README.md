@@ -117,6 +117,14 @@ Small docs fixes and targeted test improvements are welcome.
 
 For larger or behavior-changing work, please open an issue first, especially for MCP tool changes, storage changes, root/worktree safety changes, managed-doc write/export changes, release-related changes, or security-sensitive filesystem behavior.
 
+If you want local commit-message enforcement in this checkout, run:
+
+```bash
+npm run hooks:install
+```
+
+That command configures this clone's local `core.hooksPath` to `.githooks` only for the current repository checkout. The hook is a guardrail, so it is inactive until you configure it, and Git still allows an explicit bypass with `--no-verify` when you need one.
+
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the short contribution policy.
 
 ## Security

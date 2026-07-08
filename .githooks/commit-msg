@@ -1,0 +1,14 @@
+#!/usr/bin/env node
+
+import { runCommitMessageHook } from '../scripts/commit-message-contract.mjs';
+
+const commitMessagePath = process.argv[2];
+if (!commitMessagePath) {
+  console.error('Atlas commit-msg hook requires the commit message file path.');
+  process.exit(1);
+}
+
+const ok = await runCommitMessageHook(commitMessagePath);
+if (!ok) {
+  process.exit(1);
+}
