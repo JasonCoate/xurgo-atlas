@@ -70,7 +70,7 @@ describe('atlas.commit_artifact_registration', () => {
     });
   });
 
-  it('exposes strict metadata for exactly the proposal and commit artifact-registration tools', async () => {
+  it('exposes strict metadata for exactly the proposal, advisory status, and commit artifact-registration tools', async () => {
     const server = createMcpServer(async () => {
       throw new Error('not used');
     });
@@ -82,6 +82,7 @@ describe('atlas.commit_artifact_registration', () => {
     const artifactTools = result.tools.filter((tool) => tool.name.includes('artifact'));
     expect(artifactTools.map((tool) => tool.name)).toEqual([
       'atlas.propose_artifact_registration',
+      'atlas.artifact_registration_status',
       'atlas.commit_artifact_registration',
     ]);
     const commitTool = artifactTools.find((tool) => tool.name === 'atlas.commit_artifact_registration');

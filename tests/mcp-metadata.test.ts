@@ -330,6 +330,7 @@ describe('MCP server metadata', () => {
       'atlas.project_identity',
       'atlas.project_registration_proposal',
       'atlas.propose_artifact_registration',
+      'atlas.artifact_registration_status',
       'atlas.commit_artifact_registration',
     ]);
     expect(projectIdentityTool?.description).toContain('read-only runtime identity');
@@ -354,7 +355,7 @@ describe('MCP server metadata', () => {
     });
   });
 
-  it('registers only the bounded artifact registration proposal and commit tools', async () => {
+  it('registers only the bounded artifact registration proposal, status, and commit tools', async () => {
     const server = createMcpServer(async () => {
       throw new Error('not used');
     });
@@ -379,9 +380,13 @@ describe('MCP server metadata', () => {
     const commitTool = result.tools.find(
       (tool) => tool.name === 'atlas.commit_artifact_registration',
     );
+    const statusTool = result.tools.find(
+      (tool) => tool.name === 'atlas.artifact_registration_status',
+    );
 
     expect(artifactToolNames).toEqual([
       'atlas.propose_artifact_registration',
+      'atlas.artifact_registration_status',
       'atlas.commit_artifact_registration',
     ]);
     expect(proposalTool).toBeDefined();
@@ -398,6 +403,29 @@ describe('MCP server metadata', () => {
     });
     expect(Object.keys((proposalTool?.inputSchema as { properties: Record<string, unknown> }).properties)).toEqual([
       'adapterId',
+    ]);
+    expect(statusTool).toBeDefined();
+    expect(statusTool?.description).toContain('Read-only advisory status');
+    expect(statusTool?.description).toContain('does not create proposals');
+    expect(statusTool?.description).toContain('write the manifest');
+    expect(statusTool?.description).toContain('discover artifacts');
+    expect(statusTool?.inputSchema).toMatchObject({
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        projectId: { type: 'string' },
+        branch: { type: 'string' },
+        artifactId: { type: 'string' },
+        adapterId: { type: 'string' },
+        path: { type: 'string' },
+      },
+    });
+    expect(Object.keys((statusTool?.inputSchema as { properties: Record<string, unknown> }).properties)).toEqual([
+      'projectId',
+      'branch',
+      'artifactId',
+      'adapterId',
+      'path',
     ]);
     expect(commitTool).toBeDefined();
     expect(commitTool?.description).toContain('Commit exactly one pending stored artifact_registration proposal');

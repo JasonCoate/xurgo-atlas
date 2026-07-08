@@ -41,6 +41,7 @@ import {
   commitArtifactRegistrationProposal,
   createArtifactRegistrationProposal,
   parseArtifactManifestEntries,
+  type HarnessArtifactManifestEntry,
 } from '../core/artifact-registration-proposal.js';
 
 // ── Schemas ───────────────────────────────────────────────────────────
@@ -233,6 +234,26 @@ const AtlasProposeArtifactRegistrationSchema = z.object({
   adapterId: z.string().min(1, 'adapterId is required'),
 }).strict();
 
+const AtlasArtifactRegistrationStatusSchema = z.object({
+  projectId: z.string().min(1, 'projectId is required').optional(),
+  branch: z.string().optional().default('main'),
+  artifactId: z.string().min(1, 'artifactId is required').optional(),
+  adapterId: z.string().min(1, 'adapterId is required').optional(),
+  path: z.string().min(1, 'path is required').optional(),
+}).strict();
+
+const AtlasArtifactRegistrationStatusInputSchema = {
+  type: 'object',
+  properties: {
+    projectId: { type: 'string' },
+    branch: { type: 'string' },
+    artifactId: { type: 'string' },
+    adapterId: { type: 'string' },
+    path: { type: 'string' },
+  },
+  additionalProperties: false,
+};
+
 const AtlasCommitArtifactRegistrationSchema = z.object({
   proposalId: z.string().min(1),
   approval: z.literal('APPROVE_ARTIFACT_REGISTRATION_COMMIT'),
@@ -254,6 +275,25 @@ const AtlasCommitArtifactRegistrationInputSchema = {
   required: ['proposalId', 'approval', 'actor', 'projectId'],
   additionalProperties: false,
 };
+
+const ARTIFACT_REGISTRATION_READ_ONLY_GUARANTEES = [
+  'does_not_create_proposals',
+  'does_not_commit_proposals',
+  'does_not_write_manifest',
+  'does_not_append_artifacts',
+  'does_not_modify_documents',
+  'does_not_infer_approval',
+  'does_not_create_audit_records',
+  'does_not_auto_discover_artifacts',
+  'does_not_export_docs',
+] as const;
+
+const ARTIFACT_REGISTRATION_CAPABILITIES = {
+  proposalToolName: 'atlas.propose_artifact_registration',
+  commitToolName: 'atlas.commit_artifact_registration',
+  proposalOnlyAvailable: true,
+  guardedCommitAvailable: true,
+} as const;
 
 // ── Tool Registration ────────────────────────────────────────────────
 
@@ -405,6 +445,12 @@ export function registerTools(
           inputSchema: zodToJsonSchema(AtlasProposeArtifactRegistrationSchema),
         },
         {
+          name: 'atlas.artifact_registration_status',
+          description:
+            'Read-only advisory status for artifact registration. Reports proposal-only and guarded-commit availability, current docs/manifest.yml artifacts[], optional explicit lookup against existing entries only, root/write-safety posture, and the next safe action; does not create proposals, commit proposals, write the manifest, discover artifacts, audit, or export docs.',
+          inputSchema: AtlasArtifactRegistrationStatusInputSchema,
+        },
+        {
           name: 'atlas.commit_artifact_registration',
           description:
             'Commit exactly one pending stored artifact_registration proposal to docs/manifest.yml artifacts[] after explicit approval, project/root safety, stale-base, manifest, patch, and durable audit gates. Accepts only proposalId, approval literal, nonempty actor, and projectId; it does not accept caller-supplied branch, manifest path, patch, entry, artifact details, status, or risk override.',
@@ -432,6 +478,10 @@ export function registerTools(
         AtlasProposeArtifactRegistrationSchema.parse(rawArgs);
       }
 
+      if (name === 'atlas.artifact_registration_status') {
+        AtlasArtifactRegistrationStatusSchema.parse(rawArgs);
+      }
+
       if (name === 'atlas.commit_artifact_registration') {
         AtlasCommitArtifactRegistrationSchema.parse(rawArgs);
       }
@@ -445,6 +495,10 @@ export function registerTools(
 
       if (name === 'atlas.propose_artifact_registration') {
         return await handleAtlasProposeArtifactRegistration(project, rawArgs);
+      }
+
+      if (name === 'atlas.artifact_registration_status') {
+        return await handleAtlasArtifactRegistrationStatus(project, rawArgs);
       }
 
       if (name === 'atlas.commit_artifact_registration') {
@@ -1122,6 +1176,299 @@ export async function handleAtlasProposeArtifactRegistration(
         text: JSON.stringify(proposal, null, 2),
       },
     ],
+  };
+}
+
+export async function handleAtlasArtifactRegistrationStatus(
+  project: Project,
+  rawArgs: Record<string, unknown>,
+) {
+  const args = AtlasArtifactRegistrationStatusSchema.parse(rawArgs);
+  const branch = args.branch;
+  const manifestPath = 'docs/manifest.yml';
+  const rootContext = await inspectRootSafetyContextReadOnly(project);
+  const branchHead = await project.gitStore.getBranchHead(branch);
+  const { content, revision } = await project.readFile(branch, manifestPath);
+  const lookupHints = {
+    artifactId: args.artifactId ?? null,
+    adapterId: args.adapterId ?? null,
+    path: args.path ?? null,
+  };
+  const lookupRequested = Boolean(args.artifactId || args.adapterId || args.path);
+  const baseResponse = {
+    kind: 'artifact_registration_status' as const,
+    schemaVersion: 1,
+    project: {
+      projectId: project.projectId,
+      projectRoot: project.root,
+      canonicalProjectRoot: rootContext.canonicalProjectRoot,
+    },
+    branch: {
+      name: branch,
+      head: branchHead,
+      manifestPath,
+      manifestRevision: revision,
+    },
+    advisoryOnly: true,
+    proposalCapability: {
+      toolName: ARTIFACT_REGISTRATION_CAPABILITIES.proposalToolName,
+      available: ARTIFACT_REGISTRATION_CAPABILITIES.proposalOnlyAvailable,
+      mode: 'proposal_only',
+      requiresExplicitUserAction: true,
+    },
+    guardedCommitCapability: {
+      toolName: ARTIFACT_REGISTRATION_CAPABILITIES.commitToolName,
+      available: ARTIFACT_REGISTRATION_CAPABILITIES.guardedCommitAvailable,
+      requiresExplicitApproval: true,
+      approvalLiteral: 'APPROVE_ARTIFACT_REGISTRATION_COMMIT',
+    },
+    rootContext: {
+      requestedCwd: rootContext.requestedCwd,
+      safeForWrites: rootContext.safety.safeForWrites,
+      ambiguous: rootContext.safety.ambiguous,
+      warnings: rootContext.safety.warnings,
+      marker: {
+        path: rootContext.markerPath,
+        projectId: rootContext.markerProjectId,
+        present: !rootContext.safety.markerMissing,
+      },
+      git: {
+        available: rootContext.git.insideWorkTree,
+        worktreeRoot: rootContext.git.worktreeRoot,
+        branch: rootContext.git.branch,
+        head: rootContext.git.head,
+      },
+      rootLedger: rootContext.rootLedger,
+    },
+    readOnlyGuarantees: [...ARTIFACT_REGISTRATION_READ_ONLY_GUARANTEES],
+  };
+
+  if (content === null || revision === null) {
+    return {
+      content: [
+        {
+          type: 'text',
+          text: JSON.stringify(
+            {
+              ...baseResponse,
+              status: 'manifest_unavailable',
+              manifest: {
+                path: manifestPath,
+                available: false,
+                artifactCount: 0,
+                artifacts: [],
+              },
+              lookup: buildArtifactRegistrationLookup([], lookupHints, lookupRequested),
+              nextStep: {
+                code: 'repair_manifest_before_registration',
+                message: `Repair or create ${manifestPath} on branch "${branch}" before artifact registration.`,
+              },
+            },
+            null,
+            2,
+          ),
+        },
+      ],
+    };
+  }
+
+  let parsed: Record<string, unknown>;
+  try {
+    parsed = YAML.parse(content) as Record<string, unknown>;
+  } catch (err) {
+    return artifactRegistrationStatusInvalidManifestResponse(baseResponse, {
+      manifestPath,
+      branch,
+      details: err instanceof Error ? err.message : String(err),
+      lookupHints,
+      lookupRequested,
+    });
+  }
+
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return artifactRegistrationStatusInvalidManifestResponse(baseResponse, {
+      manifestPath,
+      branch,
+      details: `${manifestPath} must contain a top-level mapping`,
+      lookupHints,
+      lookupRequested,
+    });
+  }
+
+  let artifacts: HarnessArtifactManifestEntry[];
+  try {
+    artifacts = parseArtifactManifestEntries(parsed.artifacts);
+  } catch (err) {
+    return artifactRegistrationStatusInvalidManifestResponse(baseResponse, {
+      manifestPath,
+      branch,
+      details: err instanceof Error ? err.message : String(err),
+      lookupHints,
+      lookupRequested,
+    });
+  }
+
+  const lookup = buildArtifactRegistrationLookup(artifacts, lookupHints, lookupRequested);
+  const status = rootContext.safety.safeForWrites
+    ? 'available'
+    : 'read_only_available_root_unsafe';
+  const nextStep = buildArtifactRegistrationStatusNextStep({
+    status,
+    lookupStatus: lookup.status,
+  });
+
+  return {
+    content: [
+      {
+        type: 'text',
+        text: JSON.stringify(
+          {
+            ...baseResponse,
+            status,
+            manifest: {
+              path: manifestPath,
+              available: true,
+              valid: true,
+              artifactCount: artifacts.length,
+              artifacts,
+            },
+            lookup,
+            nextStep,
+          },
+          null,
+          2,
+        ),
+      },
+    ],
+  };
+}
+
+type ArtifactRegistrationLookupStatus =
+  | 'not_requested'
+  | 'registered'
+  | 'not_registered'
+  | 'ambiguous';
+
+function buildArtifactRegistrationLookup(
+  artifacts: HarnessArtifactManifestEntry[],
+  hints: {
+    artifactId: string | null;
+    adapterId: string | null;
+    path: string | null;
+  },
+  requested: boolean,
+): {
+  status: ArtifactRegistrationLookupStatus;
+  requested: boolean;
+  hints: {
+    artifactId: string | null;
+    adapterId: string | null;
+    path: string | null;
+  };
+  matchCount: number;
+  artifacts: HarnessArtifactManifestEntry[];
+} {
+  if (!requested) {
+    return {
+      status: 'not_requested',
+      requested: false,
+      hints,
+      matchCount: 0,
+      artifacts: [],
+    };
+  }
+
+  const matches = artifacts.filter((artifact) =>
+    (hints.artifactId === null || artifact.id === hints.artifactId) &&
+    (hints.adapterId === null || artifact.adapterId === hints.adapterId) &&
+    (hints.path === null || artifact.path === hints.path),
+  );
+
+  return {
+    status: matches.length === 0
+      ? 'not_registered'
+      : matches.length === 1
+        ? 'registered'
+        : 'ambiguous',
+    requested: true,
+    hints,
+    matchCount: matches.length,
+    artifacts: matches,
+  };
+}
+
+function artifactRegistrationStatusInvalidManifestResponse(
+  baseResponse: Record<string, unknown>,
+  options: {
+    manifestPath: string;
+    branch: string;
+    details: string;
+    lookupHints: {
+      artifactId: string | null;
+      adapterId: string | null;
+      path: string | null;
+    };
+    lookupRequested: boolean;
+  },
+) {
+  return {
+    content: [
+      {
+        type: 'text',
+        text: JSON.stringify(
+          {
+            ...baseResponse,
+            status: 'manifest_invalid',
+            manifest: {
+              path: options.manifestPath,
+              available: true,
+              valid: false,
+              artifactCount: 0,
+              artifacts: [],
+              details: options.details,
+            },
+            lookup: buildArtifactRegistrationLookup(
+              [],
+              options.lookupHints,
+              options.lookupRequested,
+            ),
+            nextStep: {
+              code: 'repair_manifest_before_registration',
+              message: `Repair ${options.manifestPath} on branch "${options.branch}" before artifact registration.`,
+            },
+          },
+          null,
+          2,
+        ),
+      },
+    ],
+  };
+}
+
+function buildArtifactRegistrationStatusNextStep(options: {
+  status: 'available' | 'read_only_available_root_unsafe';
+  lookupStatus: ArtifactRegistrationLookupStatus;
+}): { code: string; message: string } {
+  if (options.status === 'read_only_available_root_unsafe') {
+    return {
+      code: 'stay_read_only_resolve_root_safety',
+      message:
+        'Artifact-registration status is available read-only, but root safety is not safe for guarded writes; resolve root safety before proposing or committing registration changes.',
+    };
+  }
+
+  if (options.lookupStatus === 'registered' || options.lookupStatus === 'ambiguous') {
+    return {
+      code: 'review_existing_registration',
+      message:
+        'Review the existing manifest registration before creating any new artifact-registration proposal.',
+    };
+  }
+
+  return {
+    code: 'propose_registration_first',
+    message:
+      'Create a proposal-only artifact-registration request before any guarded commit, approval, or manifest write.',
   };
 }
 
