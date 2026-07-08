@@ -1,5 +1,14 @@
 # Changelog
 
+
+## 0.4.0 - 2026-07-07
+
+### Added
+
+- Added the guarded artifact-registration commit flow for approved artifact registration proposals.
+- Added durable audit coverage and validation around artifact registration commits.
+- Expanded MCP metadata coverage for guarded artifact registration behavior.
+
 ## v0.2.1 (2026-06-20)
 
 **README and release-facing documentation recovery.**

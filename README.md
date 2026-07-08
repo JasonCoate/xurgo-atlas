@@ -41,12 +41,13 @@ Templates are documentation templates, not application scaffolds, and existing d
 
 Atlas helps an AI client or developer:
 
-- discover the docs Atlas manages for a project
+- discover the docs and artifacts Atlas manages for a project
 - read focused sections or context packs instead of opening every file
 - search Atlas-managed docs with local lexical search
 - inspect which project folder Atlas is currently bound to before writing
 - propose, preview, commit, and export governed documentation changes
-- keep a documented history of managed-doc changes
+- register approved project artifacts through guarded proposal and commit flows
+- keep a documented history of managed-doc and artifact-registration changes
 
 Atlas is optional. Use it when a project wants governed docs and durable project context through a CLI or MCP server.
 
@@ -89,6 +90,8 @@ read -> propose -> preview -> commit -> export
 ```
 
 That means a client reads the current document revision, proposes a standard diff, previews the stored proposal, commits it through Atlas, and exports the managed snapshot back to disk when the working tree needs to be updated. `docs.preview_export` lets clients inspect what export would change before writing files.
+
+Artifact registration uses a separate guarded proposal and commit flow. Atlas can record approved project artifacts in managed metadata with audit evidence, while still avoiding a general-purpose file-write surface.
 
 Atlas also reports project identity and write-safety information through `xurgo-atlas mcp-config --json`, `docs.status`, and the current `atlas.project_identity` MCP helper. `atlas.project_identity` also adds descriptive managed-state provenance context. In plain terms, these surfaces help clients confirm they are operating on the intended project folder before running guarded write or export operations.
 

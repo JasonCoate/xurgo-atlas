@@ -1,6 +1,6 @@
 {
   "name": "xurgo-atlas",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Xurgo Atlas: safe, versioned, auditable documentation management for AI-assisted software projects",
   "type": "module",
   "bin": {
