@@ -93,6 +93,8 @@ That means a client reads the current document revision, proposes a standard dif
 
 Artifact registration uses a separate guarded proposal and commit flow. Atlas can record approved project artifacts in managed metadata with audit evidence, while still avoiding a general-purpose file-write surface.
 
+For read-only advisory checks, use `atlas.artifact_registration_status` to inspect proposal availability, existing artifact entries, root/write-safety posture, and the next safe action before creating or committing artifact-registration work.
+
 Atlas also reports project identity and write-safety information through `xurgo-atlas mcp-config --json`, `docs.status`, and the current `atlas.project_identity` MCP helper. `atlas.project_identity` also adds descriptive managed-state provenance context. In plain terms, these surfaces help clients confirm they are operating on the intended project folder before running guarded write or export operations.
 
 ## Documentation
