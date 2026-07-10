@@ -177,6 +177,12 @@ A current `xurgo-atlas` daemon should advertise its supported tools through live
 - `docs.commit_patch`
 - `docs.restore_file`
 
+### Artifact-registration workflow
+
+- `atlas.artifact_registration_status` provides read-only advisory status for artifact registration; it does not create proposals, commit proposals, write the manifest, audit, or export documents.
+- `atlas.propose_artifact_registration` creates a stored review-only proposal for one cataloged harness descriptor; it does not approve, commit, write the manifest, or activate artifacts.
+- `atlas.commit_artifact_registration` commits exactly one pending proposal only after its explicit approval, project/root-safety, stale-base, manifest, patch, and durable-audit gates pass.
+
 ### Export workflow
 
 - `docs.preview_export`

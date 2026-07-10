@@ -18,7 +18,7 @@ relatedDocs:
   - docs/atlas/daemon-mcp.md
   - docs/atlas/storage-migration.md
   - docs/atlas/release-checklist.md
-lastUpdated: "2026-06-22"
+lastUpdated: "2026-07-10"
 ---
 
 # Project Status
