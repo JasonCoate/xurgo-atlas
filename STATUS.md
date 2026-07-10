@@ -27,7 +27,7 @@ lastUpdated: "2026-06-22"
 Xurgo Atlas is the project-context and documentation-safety MCP. Package metadata now uses `xurgo-atlas`, published npm contents are explicitly allowlisted, daemon lifecycle commands and curated Atlas document ownership are implemented, and guarded document proposals remain the required path for managed docs. Managed storage now defaults to Atlas XDG roots while preserving legacy `docu-guard` fallback discovery for compatibility, and the CLI now supports both read-only storage inspection and a conservative copy-only legacy-to-Atlas apply path.
 
 ## Current Focus
-The current focus is no longer another private RC gate. Treat live Git inspection as the authority for the exact checkout identity on `main` and `origin/main`; the current repository baseline is the Atlas-branded `xurgo-atlas` v0.2.1 line with recent release-baseline-preserving slices landed on top of the earlier private RC checkpoint.
+The current focus is no longer another private RC gate. Treat live Git inspection as the authority for the exact checkout identity on `main` and `origin/main`; the current repository baseline is the Atlas-branded `xurgo-atlas` v0.4.0 line with recent release-baseline-preserving slices landed on top of the earlier private RC checkpoint.
 
 That current release baseline includes the human-first public docs recovery, release-toolchain contract hardening, the read-only `xurgo-atlas doctor` snapshot, the `atlas.managed_state_provenance` / project-identity provenance work, internal client conformance checks, and the Atlas-managed lexical `docs.search` tool. Those are current repository facts; the June private RC readiness pass remains useful historical evidence, but it is no longer the present delivery headline.
 

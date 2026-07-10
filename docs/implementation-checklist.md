@@ -1,7 +1,7 @@
 # Xurgo Atlas — Implementation Checklist
 
 > Last updated: 2026-06-22 (current-state alignment for Atlas release-baseline work)
-> Status: **The live repository is an Atlas-branded `xurgo-atlas` v0.2.1 baseline; current priority is to preserve that baseline, while older private-RC and naming-migration checkpoints remain below as historical implementation record**
+> Status: **The live repository is an Atlas-branded `xurgo-atlas` v0.4.0 baseline; current priority is to preserve that baseline, while older private-RC and naming-migration checkpoints remain below as historical implementation record**
 >
 > Current state:
 > - Product name and package metadata now point to **Xurgo Atlas** / `xurgo-atlas`.
@@ -15,7 +15,7 @@
 | Area | Current state | Notes |
 |------|---------------|-------|
 | Product identity | ✅ Current | User-facing product name is **Xurgo Atlas**; package metadata is `xurgo-atlas` |
-| Package baseline | ✅ Current | `package.json` reports version `0.2.1`; verify the exact live checkout identity from Git instead of freezing a SHA in this checklist |
+| Package baseline | ✅ Current | `package.json` reports version `0.4.0`; verify the exact live checkout identity from Git instead of freezing a SHA in this checklist |
 | Release posture | ✅ Current | Focus is preserving a credible baseline first, not reopening the June private RC checkpoint as the standing current focus |
 | Recent baseline-preserving additions | ✅ Current | Read-only `doctor`, managed-state/provenance reporting, internal client conformance checks, and `docs.search` are already landed on `main` |
 | Historical checkpoints | ℹ️ Historical | Private RC readiness, storage migration readiness, and naming-migration planning remain useful record but are not the primary current work queue |

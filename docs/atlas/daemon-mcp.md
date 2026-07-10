@@ -137,7 +137,7 @@ Connected clients can see the same safety concepts in `docs.status`, where they 
 
 `xurgo-atlas doctor --json` also exposes a read-only identity model under `project.identity`. For a locally adopted but uninitialized checkout, expect `identityKnown: true`, `identityRegistered: true`, `managedStoreAvailable: false`, `governanceActivated: false`, `readOnlyDiscoveryEligible: true`, and `managedWriteEligible: false`. `daemonBound` remains a passive observation of the current daemon state; adoption does not start, stop, or rebind the daemon.
 
-Current `xurgo-atlas` v0.2.1-era builds register `atlas.project_identity`, a compact read-only helper that reports the active project/root binding, marker and Git identity, write-safety status, descriptive root-ledger or recovery warnings, and the recommended next step. It does not replace `xurgo-atlas mcp-config --json`; use it after connecting when an MCP client needs a quick identity snapshot.
+Current `xurgo-atlas` v0.4.0-era builds register `atlas.project_identity`, a compact read-only helper that reports the active project/root binding, marker and Git identity, write-safety status, descriptive root-ledger or recovery warnings, and the recommended next step. It does not replace `xurgo-atlas mcp-config --json`; use it after connecting when an MCP client needs a quick identity snapshot.
 
 `atlas.project_identity.managedStateProvenance` is optional descriptive context for consumers that want extra managed-state provenance detail. Consumers should feature-detect it and tolerate its absence. It is not required for MCP discovery or ordinary Atlas operation, and it does not override `safeForWrites` for Atlas-managed write or export decisions.
 
@@ -151,7 +151,7 @@ Use `docs.capabilities` only as supplemental summary context. It is useful for b
 
 ## Supported Tools
 
-A current `xurgo-atlas` daemon should advertise its supported tools through live `tools/list`. In the current `v0.2.1` repository line, that public tool set includes:
+A current `xurgo-atlas` daemon should advertise its supported tools through live `tools/list`. In the current `v0.4.0` repository line, that public tool set includes:
 
 ### Discovery and read-only context
 
