@@ -95,6 +95,8 @@ Artifact registration uses a separate guarded proposal and commit flow. Atlas ca
 
 For read-only advisory checks, use `atlas.artifact_registration_status` to inspect proposal availability, existing artifact entries, root/write-safety posture, and the next safe action before creating or committing artifact-registration work.
 
+This checkout is preparing a local `0.5.0` release candidate for that backward-compatible MCP addition. It is not a published release; use the installed package version and live MCP discovery for the running server you connect to.
+
 Atlas also reports project identity and write-safety information through `xurgo-atlas mcp-config --json`, `docs.status`, and the current `atlas.project_identity` MCP helper. `atlas.project_identity` also adds descriptive managed-state provenance context. In plain terms, these surfaces help clients confirm they are operating on the intended project folder before running guarded write or export operations.
 
 ## Documentation

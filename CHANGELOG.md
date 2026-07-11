@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.5.0 - Unreleased
+
+### Added
+
+- Added the backward-compatible, read-only `atlas.artifact_registration_status` MCP tool for advisory artifact-registration checks before proposal or commit flows.
+
+### Developer tooling
+
+- Added an optional local Conventional Commit hook workflow; it is checkout tooling, not a public runtime capability.
+
 
 ## 0.4.0 - 2026-07-07
 
@@ -8,7 +18,6 @@
 - Added the guarded artifact-registration commit flow for approved artifact registration proposals.
 - Added durable audit coverage and validation around artifact registration commits.
 - Expanded MCP metadata coverage for guarded artifact registration behavior.
-- Added the read-only `atlas.artifact_registration_status` MCP tool for advisory status checks before artifact-registration proposal or commit flows.
 
 ## v0.2.1 (2026-06-20)
 

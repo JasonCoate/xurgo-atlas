@@ -14,6 +14,23 @@ export const EXPECTED_PACKAGE_NAME = 'xurgo-atlas';
 export const RELEASE_OWNER = 'xurgo';
 export const RELEASE_REPO = 'xurgo-atlas';
 
+/** Accept only the canonical GitHub HTTPS repository identity, ignoring case in GitHub owner/name spelling. */
+export function isExpectedOrigin(originRemote) {
+  try {
+    const origin = new URL(originRemote);
+    return origin.protocol === 'https:'
+      && origin.hostname.toLowerCase() === 'github.com'
+      && origin.port === ''
+      && origin.username === ''
+      && origin.password === ''
+      && origin.search === ''
+      && origin.hash === ''
+      && origin.pathname.toLowerCase() === `/${RELEASE_OWNER}/${RELEASE_REPO}.git`;
+  } catch {
+    return false;
+  }
+}
+
 export const BANNED_COMMAND_FAMILIES = [
   ['npm', 'publish'],
   ['npm', 'version'],
@@ -245,7 +262,7 @@ export function evaluatePreflight(stage, facts) {
       'origin remote identity',
       facts.expectedOrigin,
       facts.originRemote,
-      facts.originRemote === facts.expectedOrigin,
+      isExpectedOrigin(facts.originRemote),
       `Set origin to ${facts.expectedOrigin} in the confirmed checkout.`,
     ),
     check(

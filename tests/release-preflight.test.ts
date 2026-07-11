@@ -5,6 +5,7 @@ import {
   collectPreflightFacts,
   createRunner,
   evaluatePreflight,
+  isExpectedOrigin,
   parseArgs,
 } from '../scripts/release-preflight.mjs';
 
@@ -59,6 +60,15 @@ describe('release preflight argument parsing', () => {
 });
 
 describe('release preflight fail-closed checks', () => {
+  it('accepts only the expected GitHub HTTPS origin identity with case-insensitive owner/name', () => {
+    expect(isExpectedOrigin('https://github.com/xurgo/xurgo-atlas.git')).toBe(true);
+    expect(isExpectedOrigin('https://github.com/Xurgo/xurgo-atlas.git')).toBe(true);
+    expect(isExpectedOrigin('https://github.com/other/xurgo-atlas.git')).toBe(false);
+    expect(isExpectedOrigin('https://github.com/xurgo/other.git')).toBe(false);
+    expect(isExpectedOrigin('https://git.example.com/xurgo/xurgo-atlas.git')).toBe(false);
+    expect(isExpectedOrigin('not a URL')).toBe(false);
+  });
+
   it('requires the exact .nvmrc runtime match', () => {
     const result = evaluate('prepare', { nodeVersion: 'v24.4.1' });
 
@@ -189,7 +199,7 @@ describe('release preflight command safety', () => {
       ['npm --version', '10.9.2\n'],
       ['npm view xurgo-atlas@0.3.0 version --json', ''],
       ['npm view xurgo-atlas dist-tags.latest --json', '"0.2.0"\n'],
-            ['git ls-remote --tags origin refs/tags/v0.4.0', ''],
+      ['git ls-remote --tags origin refs/tags/v0.5.0', ''],
 ]);
 
     const runner = {
@@ -219,7 +229,7 @@ describe('release preflight command safety', () => {
     });
 
     expect(commands).toContain('git ls-remote origin refs/heads/main');
-    expect(commands).toContain('git ls-remote --tags origin refs/tags/v0.4.0');
+    expect(commands).toContain('git ls-remote --tags origin refs/tags/v0.5.0');
     expect(commands.some((command) => command.startsWith('git fetch'))).toBe(false);
   });
 

@@ -2,7 +2,7 @@
 docuGuard.type: status
 statusVersion: 1
 priority: high
-currentFocus: "Atlas now needs a credible release baseline preserved on the live `xurgo-atlas` repository state; private RC readiness is historical context, while current work is routine baseline-safe hardening, read-only diagnostics/provenance accuracy, and governed-doc correctness"
+currentFocus: "Atlas is preparing a local `0.5.0` release candidate for a backward-compatible read-only MCP addition; published `v0.4.0` remains the baseline until separate remote and publication gates are completed"
 nextActions:
   - "Keep the Atlas release baseline routine and credible on `main`: preserve accurate current-facing docs, green focused validation, and non-breaking CLI/MCP behavior while recent read-only identity and diagnostic surfaces settle"
   - "Treat the June private RC readiness pass and storage-migration readiness as completed checkpoints; reopen them only for concrete regressions instead of carrying them as the standing current focus"
@@ -27,7 +27,7 @@ lastUpdated: "2026-07-10"
 Xurgo Atlas is the project-context and documentation-safety MCP. Package metadata now uses `xurgo-atlas`, published npm contents are explicitly allowlisted, daemon lifecycle commands and curated Atlas document ownership are implemented, and guarded document proposals remain the required path for managed docs. Managed storage now defaults to Atlas XDG roots while preserving legacy `docu-guard` fallback discovery for compatibility, and the CLI now supports both read-only storage inspection and a conservative copy-only legacy-to-Atlas apply path.
 
 ## Current Focus
-The current focus is no longer another private RC gate. Treat live Git inspection as the authority for the exact checkout identity on `main` and `origin/main`; the current repository baseline is the Atlas-branded `xurgo-atlas` v0.4.0 line with recent release-baseline-preserving slices landed on top of the earlier private RC checkpoint.
+Atlas is preparing a local `0.5.0` release candidate. The published `v0.4.0` line remains the baseline until separately authorized remote reconciliation, tagging, and publication gates are complete. The candidate adds the backward-compatible read-only `atlas.artifact_registration_status` MCP tool and keeps its proposal and commit workflows explicitly separate.
 
 That current release baseline includes the human-first public docs recovery, release-toolchain contract hardening, the read-only `xurgo-atlas doctor` snapshot, the `atlas.managed_state_provenance` / project-identity provenance work, internal client conformance checks, and the Atlas-managed lexical `docs.search` tool. Those are current repository facts; the June private RC readiness pass remains useful historical evidence, but it is no longer the present delivery headline.
 

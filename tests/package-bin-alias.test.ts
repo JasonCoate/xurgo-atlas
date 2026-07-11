@@ -19,4 +19,20 @@ describe('package bin aliases', () => {
       'xurgo-atlas': 'dist/index.js',
     });
   });
+
+  it('keeps every hooks:install asset in the package allowlist', async () => {
+    const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+    const packageJson = JSON.parse(await fs.readFile(path.join(root, 'package.json'), 'utf8'));
+    const hookAssets = [
+      'scripts/install-git-hooks.mjs',
+      'scripts/commit-message-contract.mjs',
+      '.githooks/commit-msg',
+    ];
+
+    expect(packageJson.scripts['hooks:install']).toBe('node scripts/install-git-hooks.mjs');
+    expect(packageJson.files).toEqual(expect.arrayContaining(hookAssets));
+    await Promise.all(hookAssets.map(async (asset) => {
+      await expect(fs.access(path.join(root, asset))).resolves.toBeUndefined();
+    }));
+  });
 });

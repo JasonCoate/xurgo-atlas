@@ -1,6 +1,6 @@
 {
   "name": "xurgo-atlas",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Xurgo Atlas: safe, versioned, auditable documentation management for AI-assisted software projects",
   "type": "module",
   "bin": {
@@ -12,7 +12,10 @@
     "./package.json": "./package.json"
   },
   "files": [
-    "dist"
+    "dist",
+    "scripts/install-git-hooks.mjs",
+    "scripts/commit-message-contract.mjs",
+    ".githooks/commit-msg"
   ],
   "scripts": {
     "build": "tsc",
