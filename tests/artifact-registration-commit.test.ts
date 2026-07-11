@@ -283,7 +283,10 @@ describe('atlas.commit_artifact_registration', () => {
   });
 
   it('rejects malformed and mismatched stored bindings without audit or commit', async () => {
-    for (const [name, mutate, expected] of [
+    const project = await initProject('artifact-commit-bad-bindings');
+    const beforeHead = await project.gitStore.getBranchHead('main');
+
+    const cases = [
       ['wrong kind', (p: Project, id: string) => db(p).prepare('UPDATE artifact_registration_proposals SET kind = ? WHERE id = ?').run('document_patch', id), 'stored kind'],
       ['unsupported schema', (p: Project, id: string) => db(p).prepare('UPDATE artifact_registration_proposals SET schema_version = ? WHERE id = ?').run(2, id), 'schema version'],
       ['root mismatch', (p: Project, id: string) => db(p).prepare('UPDATE artifact_registration_proposals SET canonical_project_root = ? WHERE id = ?').run('/tmp/not-this-root', id), 'canonical root'],
@@ -297,22 +300,19 @@ describe('atlas.commit_artifact_registration', () => {
       }, 'descriptor identity'],
       ['patch mismatch', (p: Project, id: string) => db(p).prepare('UPDATE artifact_registration_proposals SET patch = ? WHERE id = ?').run('--- a/docs/manifest.yml\n+++ b/docs/manifest.yml\n@@ -1,1 +1,1 @@\n-version: 1\n+version: 1\n', id), 'patch'],
       ['prohibited implication mismatch', (p: Project, id: string) => db(p).prepare('UPDATE artifact_registration_proposals SET prohibited_implications_json = ? WHERE id = ?').run(JSON.stringify(['approval']), id), 'prohibited implications'],
-    ] as const) {
-      const caseRoot = path.join(tmpDir, name.replace(/\W/g, '-'));
-      await fs.promises.mkdir(caseRoot, { recursive: true });
-      const project = await initProject(
-        `artifact-commit-bad-${name.replace(/\W/g, '-')}`,
-        caseRoot,
-      );
-      const proposal = await propose(project);
-      const beforeHead = await project.gitStore.getBranchHead('main');
-      mutate(project, proposal.proposalId);
+    ] as const;
 
-      const result = await commit(project, proposal.proposalId);
+    const proposals = await Promise.all(cases.map(() => propose(project)));
+
+    for (let i = 0; i < cases.length; i++) {
+      const [name, mutate, expected] = cases[i];
+      mutate(project, proposals[i].proposalId);
+
+      const result = await commit(project, proposals[i].proposalId);
 
       expect(result.isError, name).toBe(true);
       expect(result.content[0].text, name).toContain(expected);
-      expect(project.eventLog.getArtifactRegistrationCommitAudit(proposal.proposalId), name).toBeNull();
+      expect(project.eventLog.getArtifactRegistrationCommitAudit(proposals[i].proposalId), name).toBeNull();
       expect(await project.gitStore.getBranchHead('main'), name).toBe(beforeHead);
     }
   });
