@@ -333,3 +333,17 @@ export function createUnifiedDiffForReplacement(
 
   return diff;
 }
+
+/** Generate the only deletion shape accepted by guarded orphan removal. */
+export function createUnifiedDiffForDeletion(filePath: string, oldContent: string): string {
+  const oldLines = splitPreserveLines(oldContent);
+  let diff = `--- a/${filePath}\n+++ /dev/null\n`;
+  diff += `@@ -1,${oldLines.length} +0,0 @@\n`;
+  for (const line of oldLines) diff += `-${line}\n`;
+  return diff;
+}
+
+/** Keep guarded deletion verification bound to the same canonical diff generator. */
+export function isExactUnifiedDiffForDeletion(filePath: string, oldContent: string, candidate: string): boolean {
+  return candidate === createUnifiedDiffForDeletion(filePath, oldContent);
+}

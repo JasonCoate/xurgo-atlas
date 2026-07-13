@@ -1,5 +1,6 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { execFile } from 'node:child_process';
 import { simpleGit, SimpleGit } from 'simple-git';
 import { normalizeUnifiedDiffPatch } from './unified-diff.js';
 
@@ -13,6 +14,16 @@ export interface CommitResult {
   branch: string;
   message: string;
 }
+
+/**
+ * The deletion primitive never throws an ambiguous ref-update result into its
+ * caller. A caller may report git_failed only after observing the old head;
+ * every other outcome is retained for manual audit reconciliation.
+ */
+export type LocalDeletionCommitResult =
+  | { state: 'applied'; commit: CommitResult }
+  | { state: 'not_applied'; error: string }
+  | { state: 'reconciliation_required'; commit?: CommitResult; observation: 'matching_commit' | 'unexpected_head' | 'head_unavailable'; error: string };
 
 export interface HistoryEntry {
   hash: string;
@@ -32,6 +43,51 @@ export interface ExportTargetBranchInfo {
   revision: string | null;
 }
 
+export interface TreeFileEntry {
+  mode: string;
+  type: string;
+  revision: string;
+}
+
+export interface TreeEntry extends TreeFileEntry {
+  path: string;
+}
+
+export interface CommitFileChange {
+  oldMode: string;
+  newMode: string;
+  oldRevision: string;
+  newRevision: string;
+  status: string;
+  path: string;
+}
+
+function runBareGit(repoPath: string, args: string[]): Promise<Buffer | null> {
+  return new Promise((resolve) => {
+    execFile('git', args, {
+      cwd: repoPath,
+      encoding: 'buffer',
+      maxBuffer: 16 * 1024 * 1024,
+    }, (error, stdout) => resolve(error ? null : Buffer.from(stdout)));
+  });
+}
+
+function runBareGitOrThrow(repoPath: string, args: string[], environment: NodeJS.ProcessEnv): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    execFile('git', args, {
+      cwd: repoPath,
+      env: environment,
+      encoding: 'buffer',
+      maxBuffer: 16 * 1024 * 1024,
+    }, (error, stdout, stderr) => error ? reject(new Error(stderr.toString('utf8').trim() || error.message)) : resolve(Buffer.from(stdout)));
+  });
+}
+
+function parseTreeEntry(raw: string): TreeFileEntry | undefined {
+  const match = raw.match(/^(\d+)\s+(\w+)\s+([0-9a-f]+)\t/);
+  return match ? { mode: match[1], type: match[2], revision: match[3] } : undefined;
+}
+
 function sameChangedFiles(actual: string[], expected: string[]): boolean {
   if (actual.length !== expected.length) {
     return false;
@@ -45,6 +101,9 @@ function sameChangedFiles(actual: string[], expected: string[]): boolean {
 export class GitStore {
   private repoPath: string;
   private workDir: string;
+  // Private fault seam for deterministic state-machine tests. It is never
+  // populated by production callers and cannot alter the public MCP contract.
+  private orphanRemovalRefUpdateFault?: (stage: 'before_update_ref' | 'after_update_ref') => void | Promise<void>;
 
   constructor(repoPath: string) {
     this.repoPath = repoPath;
@@ -265,6 +324,173 @@ export class GitStore {
       return content;
     } catch {
       return null;
+    }
+  }
+
+  /** Read a tree entry without checking out, fetching, or consulting a remote. */
+  async getTreeFileEntry(branch: string, filePath: string): Promise<TreeFileEntry | null> {
+    try {
+      const output = await simpleGit({ baseDir: this.repoPath }).raw([
+        'ls-tree', branch, '--', filePath,
+      ]);
+      return parseTreeEntry(output.trim()) ?? null;
+    } catch { return null; }
+  }
+
+  /**
+   * Read a tree entry at an immutable object. Undefined is a proven absence;
+   * null is deliberately reserved for an observation failure so callers can
+   * fail closed instead of confusing missing content with unavailable Git.
+   */
+  async observeTreeFileEntry(revision: string, filePath: string): Promise<TreeFileEntry | undefined | null> {
+    const output = await runBareGit(this.repoPath, ['ls-tree', '-z', revision, '--', filePath]);
+    if (output === null) return null;
+    if (output.length === 0) return undefined;
+    const record = output.toString('utf8').replace(/\0$/, '');
+    return parseTreeEntry(record) ?? null;
+  }
+
+  /** Enumerate the exact branch tree with modes, object types, and blob IDs. */
+  async observeTreeEntries(branch: string): Promise<TreeEntry[] | null> {
+    const output = await runBareGit(this.repoPath, ['ls-tree', '-r', '-z', branch]);
+    if (output === null) return null;
+    const decoder = new TextDecoder('utf-8', { fatal: true });
+    try {
+      const entries: TreeEntry[] = [];
+      const seen = new Set<string>();
+      for (const raw of output.toString('binary').split('\0')) {
+        if (!raw) continue;
+        const tab = raw.indexOf('\t');
+        if (tab < 0) return null;
+        const header = raw.slice(0, tab);
+        const pathBytes = Buffer.from(raw.slice(tab + 1), 'binary');
+        const filePath = decoder.decode(pathBytes);
+        const parsed = parseTreeEntry(`${header}\t`);
+        if (!parsed || !filePath || seen.has(filePath)) return null;
+        seen.add(filePath);
+        entries.push({ path: filePath, ...parsed });
+      }
+      return entries;
+    } catch {
+      return null;
+    }
+  }
+
+  /** Read an exact Git blob as bytes; this has no worktree or remote behavior. */
+  async readBlob(revision: string): Promise<Buffer | null> {
+    return runBareGit(this.repoPath, ['cat-file', 'blob', revision]);
+  }
+
+  /** Observe a commit's sole parent. Multiple parents are intentionally ambiguous. */
+  async observeSingleCommitParent(commit: string): Promise<string | null> {
+    const output = await runBareGit(this.repoPath, ['rev-list', '--parents', '-n', '1', commit]);
+    if (output === null) return null;
+    const fields = output.toString('utf8').trim().split(/\s+/);
+    return fields.length === 2 && fields[0] === commit ? fields[1] : null;
+  }
+
+  /** Observe raw commit changes so status checks can prove a full-file deletion. */
+  async observeCommitFileChanges(commit: string): Promise<CommitFileChange[] | null> {
+    const output = await runBareGit(this.repoPath, ['diff-tree', '--no-commit-id', '--raw', '-r', '-z', commit]);
+    if (output === null) return null;
+    try {
+      const fields = output.toString('utf8').split('\0').filter(Boolean);
+      const changes: CommitFileChange[] = [];
+      for (let index = 0; index < fields.length; index += 2) {
+        const header = fields[index];
+        const filePath = fields[index + 1];
+        const match = header.match(/^:(\d+)\s+(\d+)\s+([0-9a-f]+)\s+([0-9a-f]+)\s+([A-Z])$/);
+        if (!match || !filePath) return null;
+        changes.push({
+          oldMode: match[1], newMode: match[2], oldRevision: match[3], newRevision: match[4], status: match[5], path: filePath,
+        });
+      }
+      return changes;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Commit one already-reviewed deletion directly in the local bare store.
+   * This intentionally avoids withWorkDir and every remote command/config path.
+   */
+  async commitOneFileDeletionLocal(
+    branch: 'main', filePath: string, expectedHead: string, expectedRevision: string, message: string,
+  ): Promise<LocalDeletionCommitResult> {
+    const git = simpleGit({ baseDir: this.repoPath });
+    const commitResult = (hash: string): CommitResult => ({ hash, branch, message });
+    const observeNonApplication = async (error: unknown, commit?: string): Promise<LocalDeletionCommitResult> => {
+      const observedHead = await this.getBranchHead(branch);
+      const detail = error instanceof Error ? error.message : String(error);
+      if (observedHead === expectedHead) return { state: 'not_applied', error: detail };
+      if (commit) return {
+        state: 'reconciliation_required', commit: commitResult(commit),
+        observation: observedHead === null ? 'head_unavailable' : 'unexpected_head', error: detail,
+      };
+      // Without a generated commit identity this still cannot honestly be
+      // treated as git_failed unless the old head was observed above.
+      return {
+        state: 'reconciliation_required',
+        observation: observedHead === null ? 'head_unavailable' : 'unexpected_head', error: detail,
+      };
+    };
+    let head: string;
+    let entry: TreeFileEntry | null;
+    try {
+      head = (await git.raw(['rev-parse', branch])).trim();
+      if (head !== expectedHead) throw new Error(`Managed branch head changed from ${expectedHead} to ${head}`);
+      entry = await this.getTreeFileEntry(branch, filePath);
+      if (!entry || entry.type !== 'blob' || !['100644', '100755'].includes(entry.mode) || entry.revision !== expectedRevision) {
+        throw new Error('Target is missing, non-regular, or no longer matches the reviewed revision');
+      }
+    } catch (error) {
+      return observeNonApplication(error);
+    }
+    const index = path.join(this.repoPath, `.orphan-removal-${process.pid}-${Date.now()}.index`);
+    // Explicit GIT_DIR keeps every plumbing command in the bare managed store;
+    // no source worktree is consulted or required for this guarded deletion.
+    const environment = { ...process.env, GIT_DIR: this.repoPath, GIT_WORK_TREE: this.repoPath, GIT_INDEX_FILE: index };
+    const local = (args: string[]) => runBareGitOrThrow(this.repoPath, args, environment);
+    try {
+      await local(['read-tree', branch]);
+      await local(['update-index', '--force-remove', '--', filePath]);
+      const tree = (await local(['write-tree'])).toString('utf8').trim();
+      const commit = (await local([
+        '-c', 'user.name=Xurgo Atlas', '-c', 'user.email=atlas@localhost',
+        'commit-tree', tree, '-p', head, '-m', message,
+      ])).toString('utf8').trim();
+      // Prove the prospective object has the reviewed one-file deletion shape
+      // before it can become reachable from the managed branch.
+      const changes = await this.observeCommitFileChanges(commit);
+      const exactDeletion = changes?.length === 1 && changes[0].path === filePath && changes[0].status === 'D' &&
+        changes[0].oldMode === entry.mode && changes[0].newMode === '000000' &&
+        changes[0].oldRevision === expectedRevision && /^0+$/.test(changes[0].newRevision);
+      if (!exactDeletion) throw new Error('Prospective local deletion commit is not the exact reviewed one-file deletion');
+      try {
+        await this.orphanRemovalRefUpdateFault?.('before_update_ref');
+        await local(['update-ref', `refs/heads/${branch}`, commit, head]);
+        await this.orphanRemovalRefUpdateFault?.('after_update_ref');
+      } catch (error) {
+        const observedHead = await this.getBranchHead(branch);
+        const detail = error instanceof Error ? error.message : String(error);
+        if (observedHead === expectedHead) return { state: 'not_applied', error: detail };
+        return {
+          state: 'reconciliation_required', commit: commitResult(commit),
+          observation: observedHead === commit ? 'matching_commit' : observedHead === null ? 'head_unavailable' : 'unexpected_head', error: detail,
+        };
+      }
+      const observedHead = await this.getBranchHead(branch);
+      if (observedHead === commit) return { state: 'applied', commit: commitResult(commit) };
+      return {
+        state: 'reconciliation_required', commit: commitResult(commit),
+        observation: observedHead === null ? 'head_unavailable' : 'unexpected_head',
+        error: 'Managed branch ref update outcome could not be proven exact',
+      };
+    } catch (error) {
+      return observeNonApplication(error);
+    } finally {
+      await fs.promises.rm(index, { force: true }).catch(() => undefined);
     }
   }
 

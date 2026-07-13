@@ -122,6 +122,29 @@ export interface ArtifactRegistrationCommitAudit {
     | 'audit_reconciliation_required';
 }
 
+export type OrphanRemovalStatus = 'pending_review' | 'committed' | 'stale' | 'rejected' | 'git_failed' | 'audit_reconciliation_required' | 'not_orphan' | 'reference_conflict' | 'source_reconciliation_required' | 'evidence_unavailable';
+/** Read-only Git observation; unlike proposal status, this never authorizes recovery or mutation. */
+export type OrphanRemovalObservationClassification = 'not_applied' | 'matching_commit' | 'diverged' | 'unavailable';
+export interface OrphanRemovalProposalPayload {
+  proposalId: string; kind: 'orphan_removal'; schemaVersion: 1; projectId: string;
+  branch: 'main'; targetPath: string; targetMode: string; branchHead: string;
+  baseRevision: string; manifestRevision: string; canonicalProjectRoot: string;
+  evidence: Record<string, unknown>; diff: string; reason: string; reviewDigest: string;
+  status: OrphanRemovalStatus; createdAt: string; updatedAt: string;
+}
+export interface StoredOrphanRemovalProposal {
+  id: string; project_id: string; branch: 'main'; target_path: string; target_mode: string;
+  branch_head: string; base_revision: string; manifest_revision: string; canonical_project_root: string;
+  evidence: Record<string, unknown>; diff: string; reason: string; review_digest: string;
+  status: OrphanRemovalStatus; created_at: string; updated_at: string; payload: OrphanRemovalProposalPayload;
+}
+export interface OrphanRemovalCommitAudit {
+  proposal_id: string; state: 'prepared' | 'finalized'; approval_digest: string; actor: string;
+  canonical_project_root: string; target_path: string; target_mode: string; manifest_revision: string;
+  branch_head: string; deletion_fingerprint: string; prepared_at: string; commit_sha: string | null;
+  finalized_at: string | null;
+}
+
 export interface ProposalRecoveryMetadata {
   rootIdentityKey: string;
   canonicalProjectRoot: string;
@@ -263,6 +286,19 @@ export class EventLog {
         idempotency_state TEXT NOT NULL
       )
     `);
+    this.db.exec(`CREATE TABLE IF NOT EXISTS orphan_removal_proposals (
+      id TEXT PRIMARY KEY, project_id TEXT NOT NULL, branch TEXT NOT NULL, target_path TEXT NOT NULL,
+      target_mode TEXT NOT NULL, branch_head TEXT NOT NULL, base_revision TEXT NOT NULL,
+      manifest_revision TEXT NOT NULL, canonical_project_root TEXT NOT NULL, evidence_json TEXT NOT NULL,
+      diff TEXT NOT NULL, reason TEXT NOT NULL, review_digest TEXT NOT NULL, status TEXT NOT NULL,
+      created_at TEXT NOT NULL, updated_at TEXT NOT NULL, payload_json TEXT NOT NULL
+    )`);
+    this.db.exec(`CREATE TABLE IF NOT EXISTS orphan_removal_commit_audits (
+      proposal_id TEXT PRIMARY KEY, state TEXT NOT NULL, approval_digest TEXT NOT NULL, actor TEXT NOT NULL,
+      canonical_project_root TEXT NOT NULL, target_path TEXT NOT NULL, target_mode TEXT NOT NULL,
+      manifest_revision TEXT NOT NULL, branch_head TEXT NOT NULL, deletion_fingerprint TEXT NOT NULL,
+      prepared_at TEXT NOT NULL, commit_sha TEXT, finalized_at TEXT
+    )`);
     this.ensureEventColumns();
     this.ensureProposalColumns();
     this.db.exec(`
@@ -283,6 +319,7 @@ export class EventLog {
       CREATE INDEX IF NOT EXISTS idx_artifact_registration_commit_audits_state
       ON artifact_registration_commit_audits(state)
     `);
+    this.db.exec('CREATE INDEX IF NOT EXISTS idx_orphan_removal_proposals_project ON orphan_removal_proposals(project_id)');
   }
 
   private ensureProposalColumns(): void {
@@ -296,6 +333,11 @@ export class EventLog {
 
     if (!columns.some((column) => column.name === 'discarded_at')) {
       this.db.exec('ALTER TABLE doc_proposals ADD COLUMN discarded_at TEXT');
+    }
+
+    const orphanAuditColumns = this.db.prepare('PRAGMA table_info(orphan_removal_commit_audits)').all() as Array<{ name: string }>;
+    if (!orphanAuditColumns.some((column) => column.name === 'commit_sha')) {
+      this.db.exec('ALTER TABLE orphan_removal_commit_audits ADD COLUMN commit_sha TEXT');
     }
   }
 
@@ -752,6 +794,66 @@ export class EventLog {
 
     this.updateProposalStatus(id, 'discarded');
     return this.getProposal(id);
+  }
+
+  storeOrphanRemovalProposal(input: Omit<StoredOrphanRemovalProposal, 'id' | 'created_at' | 'updated_at' | 'payload'>): StoredOrphanRemovalProposal {
+    const id = `orphan_${crypto.randomUUID().slice(0, 12)}`;
+    const now = new Date().toISOString();
+    const payload: OrphanRemovalProposalPayload = {
+      proposalId: id, kind: 'orphan_removal', schemaVersion: 1, projectId: input.project_id,
+      branch: input.branch, targetPath: input.target_path, targetMode: input.target_mode,
+      branchHead: input.branch_head, baseRevision: input.base_revision, manifestRevision: input.manifest_revision,
+      canonicalProjectRoot: input.canonical_project_root, evidence: input.evidence, diff: input.diff,
+      reason: input.reason, reviewDigest: input.review_digest, status: input.status, createdAt: now, updatedAt: now,
+    };
+    this.db.prepare(`INSERT INTO orphan_removal_proposals VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run(id, input.project_id, input.branch, input.target_path, input.target_mode, input.branch_head,
+        input.base_revision, input.manifest_revision, input.canonical_project_root, JSON.stringify(input.evidence),
+        input.diff, input.reason, input.review_digest, input.status, now, now, JSON.stringify(payload));
+    return { ...input, id, created_at: now, updated_at: now, payload };
+  }
+
+  getOrphanRemovalProposal(id: string): StoredOrphanRemovalProposal | null {
+    const row = this.db.prepare('SELECT * FROM orphan_removal_proposals WHERE id = ?').get(id) as Record<string, unknown> | undefined;
+    if (!row) return null;
+    try { return { ...row, branch: row.branch as 'main', status: row.status as OrphanRemovalStatus,
+      evidence: JSON.parse(row.evidence_json as string), payload: JSON.parse(row.payload_json as string),
+    } as StoredOrphanRemovalProposal; } catch { return null; }
+  }
+
+  updateOrphanRemovalStatus(id: string, status: OrphanRemovalStatus): void {
+    this.db.prepare('UPDATE orphan_removal_proposals SET status = ?, updated_at = ? WHERE id = ?')
+      .run(status, new Date().toISOString(), id);
+  }
+
+  getOrphanRemovalCommitAudit(proposalId: string): OrphanRemovalCommitAudit | null {
+    const row = this.db.prepare('SELECT * FROM orphan_removal_commit_audits WHERE proposal_id = ?').get(proposalId) as Record<string, unknown> | undefined;
+    return row ? row as unknown as OrphanRemovalCommitAudit : null;
+  }
+
+  prepareOrphanRemovalCommitAudit(audit: Omit<OrphanRemovalCommitAudit, 'state' | 'prepared_at' | 'commit_sha' | 'finalized_at'>): OrphanRemovalCommitAudit {
+    const preparedAt = new Date().toISOString();
+    this.db.prepare(`INSERT INTO orphan_removal_commit_audits VALUES (?, 'prepared', ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL)`)
+      .run(audit.proposal_id, audit.approval_digest, audit.actor, audit.canonical_project_root,
+        audit.target_path, audit.target_mode, audit.manifest_revision, audit.branch_head,
+        audit.deletion_fingerprint, preparedAt);
+    return { ...audit, state: 'prepared', prepared_at: preparedAt, commit_sha: null, finalized_at: null };
+  }
+
+  finalizeOrphanRemovalCommitAudit(proposalId: string, commitSha: string): OrphanRemovalCommitAudit {
+    const now = new Date().toISOString();
+    const result = this.db.prepare(`UPDATE orphan_removal_commit_audits SET state='finalized', commit_sha=?, finalized_at=? WHERE proposal_id=? AND state='prepared'`).run(commitSha, now, proposalId);
+    if (result.changes !== 1) throw new Error('Unable to finalize orphan-removal audit');
+    this.updateOrphanRemovalStatus(proposalId, 'committed');
+    const audit = this.getOrphanRemovalCommitAudit(proposalId);
+    if (!audit) throw new Error('Orphan-removal audit disappeared');
+    return audit;
+  }
+
+  /** Persist a known generated deletion commit without claiming final audit completion. */
+  recordOrphanRemovalGeneratedCommit(proposalId: string, commitSha: string): void {
+    const result = this.db.prepare(`UPDATE orphan_removal_commit_audits SET commit_sha=? WHERE proposal_id=? AND state='prepared'`).run(commitSha, proposalId);
+    if (result.changes !== 1) throw new Error('Unable to record orphan-removal generated commit');
   }
 
   close(): void {

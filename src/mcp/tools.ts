@@ -43,6 +43,10 @@ import {
   parseArtifactManifestEntries,
   type HarnessArtifactManifestEntry,
 } from '../core/artifact-registration-proposal.js';
+import {
+  ORPHAN_REMOVAL_APPROVAL, proposeOrphanRemoval, previewOrphanRemoval,
+  commitOrphanRemoval, orphanRemovalStatus, OrphanRemovalError,
+} from '../core/orphan-removal-proposal.js';
 
 // ── Schemas ───────────────────────────────────────────────────────────
 
@@ -254,6 +258,11 @@ const AtlasArtifactRegistrationStatusInputSchema = {
   additionalProperties: false,
 };
 
+const ProposeOrphanRemovalSchema = z.object({ projectId: z.string().min(1), path: z.string().min(1), baseRevision: z.string().min(1), reason: z.string().min(1) }).strict();
+const PreviewOrphanRemovalSchema = z.object({ projectId: z.string().min(1), proposalId: z.string().min(1) }).strict();
+const CommitOrphanRemovalSchema = z.object({ projectId: z.string().min(1), proposalId: z.string().min(1), approval: z.literal(ORPHAN_REMOVAL_APPROVAL), reviewDigest: z.string().regex(/^[0-9a-f]{64}$/), actor: z.string().trim().min(1) }).strict();
+const OrphanRemovalStatusSchema = PreviewOrphanRemovalSchema;
+
 const AtlasCommitArtifactRegistrationSchema = z.object({
   proposalId: z.string().min(1),
   approval: z.literal('APPROVE_ARTIFACT_REGISTRATION_COMMIT'),
@@ -456,6 +465,10 @@ export function registerTools(
             'Commit exactly one pending stored artifact_registration proposal to docs/manifest.yml artifacts[] after explicit approval, project/root safety, stale-base, manifest, patch, and durable audit gates. Accepts only proposalId, approval literal, nonempty actor, and projectId; it does not accept caller-supplied branch, manifest path, patch, entry, artifact details, status, or risk override.',
           inputSchema: AtlasCommitArtifactRegistrationInputSchema,
         },
+        { name: 'docs.propose_orphan_removal', description: 'Create a high-risk review-only proposal to locally remove exactly one demonstrably orphaned managed Markdown file. Atlas fixes branch main and generates the one-file /dev/null deletion diff; callers cannot provide a patch, branch, remote, or push option.', inputSchema: zodToJsonSchema(ProposeOrphanRemovalSchema) },
+        { name: 'docs.preview_orphan_removal', description: 'Read the immutable stored orphan-removal proposal, including its exact deletion diff, evidence, and review digest.', inputSchema: zodToJsonSchema(PreviewOrphanRemovalSchema) },
+        { name: 'docs.commit_orphan_removal', description: 'Commit one reviewed orphan-removal proposal locally on managed main after exact proposal-bound approval and digest binding. actor is an asserted label, not an authentication claim.', inputSchema: zodToJsonSchema(CommitOrphanRemovalSchema) },
+        { name: 'docs.orphan_removal_status', description: 'Read-only orphan-removal proposal and audit observation. It classifies the observation as not_applied, matching_commit, diverged, or unavailable; it never retries Git or finalizes recovery automatically.', inputSchema: zodToJsonSchema(OrphanRemovalStatusSchema) },
       ],
     };
   });
@@ -485,6 +498,10 @@ export function registerTools(
       if (name === 'atlas.commit_artifact_registration') {
         AtlasCommitArtifactRegistrationSchema.parse(rawArgs);
       }
+      if (name === 'docs.propose_orphan_removal') ProposeOrphanRemovalSchema.parse(rawArgs);
+      if (name === 'docs.preview_orphan_removal') PreviewOrphanRemovalSchema.parse(rawArgs);
+      if (name === 'docs.commit_orphan_removal') CommitOrphanRemovalSchema.parse(rawArgs);
+      if (name === 'docs.orphan_removal_status') OrphanRemovalStatusSchema.parse(rawArgs);
 
       // Resolve the project for this request
       const project = await resolveProjectForRequest(
@@ -504,6 +521,10 @@ export function registerTools(
       if (name === 'atlas.commit_artifact_registration') {
         return await handleAtlasCommitArtifactRegistration(project, rawArgs);
       }
+      if (name === 'docs.propose_orphan_removal') return await handleOrphanRemoval(project, 'propose', rawArgs);
+      if (name === 'docs.preview_orphan_removal') return await handleOrphanRemoval(project, 'preview', rawArgs);
+      if (name === 'docs.commit_orphan_removal') return await handleOrphanRemoval(project, 'commit', rawArgs);
+      if (name === 'docs.orphan_removal_status') return await handleOrphanRemoval(project, 'status', rawArgs);
 
       // Inject the resolved projectId into args if not present
       // (e.g., when a default project was resolved in daemon mode)
@@ -1531,6 +1552,38 @@ export async function handleAtlasCommitArtifactRegistration(
     ],
     isError: result.idempotency === 'audit_reconciliation_required' ? true : undefined,
   };
+}
+
+async function handleOrphanRemoval(
+  project: Project,
+  action: 'propose' | 'preview' | 'commit' | 'status',
+  rawArgs: Record<string, unknown>,
+) {
+  try {
+    let result: unknown;
+    if (action === 'propose') {
+      const args = ProposeOrphanRemovalSchema.parse(rawArgs);
+      const rootSafety = await guardManagedWriteSafety(project, { operation: 'docs.propose_orphan_removal' });
+      if (rootSafety) return rootSafety;
+      result = await proposeOrphanRemoval(project, args);
+    } else if (action === 'preview') {
+      const args = PreviewOrphanRemovalSchema.parse(rawArgs);
+      result = previewOrphanRemoval(project, args.proposalId);
+    } else if (action === 'commit') {
+      const args = CommitOrphanRemovalSchema.parse(rawArgs);
+      const rootSafety = await guardManagedWriteSafety(project, { operation: 'docs.commit_orphan_removal' });
+      if (rootSafety) return rootSafety;
+      result = await commitOrphanRemoval(project, args);
+    } else {
+      const args = OrphanRemovalStatusSchema.parse(rawArgs);
+      result = await orphanRemovalStatus(project, args.proposalId);
+    }
+    const failed = typeof result === 'object' && result !== null && ['git_failed', 'audit_reconciliation_required'].includes((result as { status?: string }).status ?? '');
+    return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }], isError: failed || undefined };
+  } catch (error) {
+    const known = error instanceof OrphanRemovalError;
+    return { content: [{ type: 'text' as const, text: JSON.stringify({ status: known ? error.code : 'evidence_unavailable', error: error instanceof Error ? error.message : String(error) }) }], isError: true };
+  }
 }
 
 async function prepareDocumentCreateProposal(

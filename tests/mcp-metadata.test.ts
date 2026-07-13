@@ -1,7 +1,28 @@
-import { describe, it, expect } from 'vitest';
+import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
+import { simpleGit } from 'simple-git';
 import { createMcpServer } from '../src/mcp/create-server.js';
+import { Project } from '../src/core/project.js';
+import { proposeOrphanRemoval } from '../src/core/orphan-removal-proposal.js';
+
+let orphanRoutingTmpDir: string;
 
 describe('MCP server metadata', () => {
+  it('registers the dedicated guarded orphan-removal family', async () => {
+    const server = createMcpServer(async () => { throw new Error('not used'); });
+    const handlers = (server as any)._requestHandlers as Map<string, (request: unknown) => Promise<{ tools: Array<{ name: string; description?: string; inputSchema: unknown }> }>>;
+    const result = await handlers.get('tools/list')!({ method: 'tools/list', params: {} });
+    for (const name of ['docs.propose_orphan_removal', 'docs.preview_orphan_removal', 'docs.commit_orphan_removal', 'docs.orphan_removal_status']) {
+      expect(result.tools.find((tool) => tool.name === name)).toBeDefined();
+    }
+    expect(result.tools.find((tool) => tool.name === 'docs.orphan_removal_status')?.description).toContain('matching_commit');
+    expect(result.tools.find((tool) => tool.name === 'docs.commit_orphan_removal')?.inputSchema).toMatchObject({
+      required: ['projectId', 'proposalId', 'approval', 'reviewDigest', 'actor'],
+    });
+  });
+
   it('defaults the server name to Xurgo Atlas', () => {
     const server = createMcpServer(async () => {
       throw new Error('not used');
@@ -447,3 +468,79 @@ describe('MCP server metadata', () => {
   });
 
 });
+
+describe('guarded orphan-removal MCP routing', () => {
+  beforeEach(async () => {
+    orphanRoutingTmpDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'xurgo-atlas-orphan-routing-'));
+  });
+
+  afterEach(async () => {
+    vi.restoreAllMocks();
+    await fs.promises.rm(orphanRoutingTmpDir, { recursive: true, force: true });
+  });
+
+  it('refuses unsafe proposal roots before proposal storage and rejects caller bypass fields', async () => {
+    const project = await orphanRoutingProject('proposal-root');
+    const target = await project.gitStore.getTreeFileEntry('main', 'docs/atlas/orphan.md');
+    const beforeHead = await project.gitStore.getBranchHead('main');
+    const storeProposal = vi.spyOn(project.eventLog, 'storeOrphanRemovalProposal');
+    await fs.promises.rm(path.join(project.root, '.xurgo-atlas', 'project.json'));
+
+    const refused = await callOrphanTool(project, 'docs.propose_orphan_removal', {
+      projectId: project.projectId, path: 'docs/atlas/orphan.md', baseRevision: target!.revision, reason: 'No managed registration or references remain.',
+    });
+    expect(refused.isError).toBe(true);
+    expect(refused.content[0].text).toContain('ROOT_CONTEXT_UNSAFE');
+    expect(storeProposal).not.toHaveBeenCalled();
+    expect(await project.gitStore.getBranchHead('main')).toBe(beforeHead);
+    expect(await project.gitStore.getTreeFileEntry('main', 'docs/atlas/orphan.md')).toEqual(target);
+
+    const bypass = await callOrphanTool(project, 'docs.propose_orphan_removal', {
+      projectId: project.projectId, path: 'docs/atlas/orphan.md', baseRevision: target!.revision, reason: 'No managed registration or references remain.', projectRoot: project.root, riskOverride: true,
+    });
+    expect(bypass.isError).toBe(true);
+    expect(bypass.content[0].text).toContain('Unrecognized key');
+  });
+
+  it('refuses unsafe commit roots before prepared audit or Git mutation', async () => {
+    const project = await orphanRoutingProject('commit-root');
+    const target = await project.gitStore.getTreeFileEntry('main', 'docs/atlas/orphan.md');
+    const proposal = await proposeOrphanRemoval(project, {
+      path: 'docs/atlas/orphan.md', baseRevision: target!.revision, reason: 'No managed registration or references remain.',
+    });
+    const beforeHead = await project.gitStore.getBranchHead('main');
+    const prepareAudit = vi.spyOn(project.eventLog, 'prepareOrphanRemovalCommitAudit');
+    const remove = vi.spyOn(project.gitStore, 'commitOneFileDeletionLocal');
+    await fs.promises.rm(path.join(project.root, '.xurgo-atlas', 'project.json'));
+
+    const refused = await callOrphanTool(project, 'docs.commit_orphan_removal', {
+      projectId: project.projectId, proposalId: proposal.id, approval: 'APPROVE_ORPHAN_REMOVAL', reviewDigest: proposal.review_digest, actor: 'test-reviewer',
+    });
+    expect(refused.isError).toBe(true);
+    expect(refused.content[0].text).toContain('ROOT_CONTEXT_UNSAFE');
+    expect(prepareAudit).not.toHaveBeenCalled();
+    expect(remove).not.toHaveBeenCalled();
+    expect(project.eventLog.getOrphanRemovalCommitAudit(proposal.id)).toBeNull();
+    expect(await project.gitStore.getBranchHead('main')).toBe(beforeHead);
+    expect(await project.gitStore.getTreeFileEntry('main', 'docs/atlas/orphan.md')).toEqual(target);
+  });
+});
+
+async function orphanRoutingProject(projectId: string): Promise<Project> {
+  const projectRoot = path.join(orphanRoutingTmpDir, projectId);
+  await fs.promises.mkdir(projectRoot, { recursive: true });
+  const git = simpleGit({ baseDir: projectRoot });
+  await git.init();
+  await git.raw(['config', 'user.name', 'Test Reviewer']);
+  await git.raw(['config', 'user.email', 'test@example.invalid']);
+  await git.raw(['commit', '--allow-empty', '-m', 'Establish source identity']);
+  const project = await Project.init({ projectRoot, projectId, configDir: path.join(projectRoot, 'config'), dataDir: path.join(projectRoot, 'data') });
+  await project.gitStore.applyAndCommit('main', 'docs/atlas/orphan.md', '# orphan\n', 'Add orphan candidate');
+  return project;
+}
+
+async function callOrphanTool(project: Project, name: string, args: Record<string, unknown>): Promise<{ content: Array<{ text: string }>; isError?: boolean }> {
+  const server = createMcpServer(project);
+  const handlers = (server as unknown as { _requestHandlers: Map<string, (request: unknown) => Promise<unknown>> })._requestHandlers;
+  return await handlers.get('tools/call')!({ method: 'tools/call', params: { name, arguments: args } }) as { content: Array<{ text: string }>; isError?: boolean };
+}
