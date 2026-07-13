@@ -221,6 +221,36 @@ describe('project markers', () => {
 });
 
 describe('project resolution', () => {
+  it('can discover a valid marker and registry binding without managed operational state', async () => {
+    await withTempProject(async ({ root, configDir, dataDir }) => {
+      const markerPath = path.join(root, '.xurgo-atlas', 'project.json');
+      await fs.promises.mkdir(path.join(root, 'docs'), { recursive: true });
+      await fs.promises.writeFile(path.join(root, '.docs-policy.yml'), 'version: 1\n', 'utf-8');
+      await fs.promises.mkdir(path.dirname(markerPath), { recursive: true });
+      await fs.promises.writeFile(
+        markerPath,
+        JSON.stringify({ schemaVersion: 1, projectId: 'alpha' }, null, 2) + '\n',
+        'utf-8',
+      );
+      const registry = await Registry.load(configDir, dataDir);
+      await registry.addProject('alpha', root);
+
+      const resolved = await resolveProjectContext({
+        cwd: root,
+        configDir,
+        dataDir,
+        requireOperationalState: false,
+      });
+
+      expect(resolved).toMatchObject({
+        projectId: 'alpha',
+        projectRoot: root,
+        source: 'cwd-marker',
+      });
+      expect(fs.existsSync(path.join(dataDir, 'projects', 'alpha'))).toBe(false);
+    });
+  });
+
   it('resolves the nearest ancestor marker from a nested subdirectory', async () => {
     await withTempProject(async ({ root, configDir, dataDir }) => {
       await initCommand({
@@ -303,6 +333,43 @@ describe('project resolution', () => {
 });
 
 describe('daemon start auto-resolution', () => {
+  it('rejects an unhydrated but recognized project before inspecting daemon state', async () => {
+    await withTempProject(async ({ root, configDir, dataDir }) => {
+      const markerPath = path.join(root, '.xurgo-atlas', 'project.json');
+      const pidFile = path.join(root, 'runtime', 'daemon.json');
+      await fs.promises.mkdir(path.join(root, 'docs'), { recursive: true });
+      await fs.promises.writeFile(path.join(root, '.docs-policy.yml'), 'version: 1\n', 'utf-8');
+      await fs.promises.mkdir(path.dirname(markerPath), { recursive: true });
+      await fs.promises.writeFile(
+        markerPath,
+        JSON.stringify({ schemaVersion: 1, projectId: 'alpha' }, null, 2) + '\n',
+        'utf-8',
+      );
+      const registry = await Registry.load(configDir, dataDir);
+      await registry.addProject('alpha', root);
+      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+      const { exitSpy } = mockProcessExit();
+
+      try {
+        await withCwd(root, async () => {
+          await expect(
+            daemonCommand({ action: 'start', configDir, dataDir, pidFile }),
+          ).rejects.toThrow('process.exit(1)');
+        });
+
+        const output = errorSpy.mock.calls.flat().join('\n');
+        expect(output).toContain('Project "alpha" is recognized');
+        expect(output).toContain('managed operational state is unavailable');
+        expect(output).toContain(path.join(dataDir, 'projects', 'alpha'));
+        expect(fs.existsSync(path.join(dataDir, 'projects', 'alpha'))).toBe(false);
+        expect(fs.existsSync(pidFile)).toBe(false);
+        expect(exitSpy).toHaveBeenCalledWith(1);
+      } finally {
+        errorSpy.mockRestore();
+      }
+    });
+  });
+
   it('returns success when the daemon is already running for the same project', async () => {
     await withTempProject(async ({ root, configDir, dataDir }) => {
       await initCommand({

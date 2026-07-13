@@ -14,6 +14,7 @@ import { Project } from '../src/core/project.js';
 import { adoptProject } from '../src/core/project-adoption.js';
 import { buildDoctorSnapshot } from '../src/cli/doctor.js';
 import { getMcpConfigOutput } from '../src/cli/mcp-config.js';
+import { projectInspectLifecycleCommand } from '../src/cli/project.js';
 import { StoragePaths } from '../src/core/storage.js';
 
 let tmpDir = '';
@@ -670,14 +671,20 @@ exec "${realGit}" "$@"
     expect((await git.status()).files).toHaveLength(0);
   });
 
-  it('reports the adopted-but-unhydrated doctor model and keeps mcp-config compatibility', async () => {
+  it('keeps an adopted-but-unhydrated identity visible to lifecycle and mcp-config', async () => {
     const { root, configDir, dataDir, git } = await createRepoFixture();
+    await fs.promises.mkdir(path.join(root, 'docs'), { recursive: true });
+    await fs.promises.writeFile(path.join(root, 'docs', 'README.md'), '# Adopted project\n', 'utf-8');
+    await fs.promises.writeFile(path.join(root, '.docs-policy.yml'), 'version: 1\n', 'utf-8');
+    await git.add(['docs', '.docs-policy.yml']);
+    await git.commit('Add project documents');
     await adoptProject({
       projectRoot: root,
       projectId: 'alpha',
       configDir,
       dataDir,
     });
+    await writeMarker(root, 'alpha');
 
     const snapshot = await buildDoctorSnapshot({
       cwd: root,
@@ -694,6 +701,20 @@ exec "${realGit}" "$@"
     expect(snapshot.project.identity.managedWriteEligible).toBe(false);
     expect(snapshot.project.identity.daemonBound).toBe(false);
 
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    const lifecycle = await projectInspectLifecycleCommand({
+      projectId: 'alpha',
+      projectRoot: root,
+      configDir,
+      dataDir,
+      json: false,
+    });
+    logSpy.mockRestore();
+
+    expect(lifecycle.primaryStatus).toBe('registered_binding_observed');
+    expect(lifecycle.witnesses.marker.rawObservation).toBe('present');
+    expect(lifecycle.witnesses.managedProjectDirectory.rawObservation).toBe('absent');
+
     const mcpConfig = JSON.parse(
       await getMcpConfigOutput({
         json: true,
@@ -701,10 +722,40 @@ exec "${realGit}" "$@"
         configDir,
         dataDir,
       }),
-    ) as { projectId: string | null; projectRoot: string | null };
+    ) as {
+      projectId: string | null;
+      projectRoot: string | null;
+      projectSource: string | null;
+      registeredProjectRoot: string | null;
+      safety: {
+        safeForWrites: boolean;
+        markerMissing: boolean;
+        registeredProjectRootMissing: boolean;
+        warnings: string[];
+      };
+      operational: {
+        available: boolean;
+        blocker: string;
+        managedProjectDir: string | null;
+      };
+    };
 
-    expect(mcpConfig.projectId).toBeNull();
-    expect(mcpConfig.projectRoot).toBeNull();
+    expect(mcpConfig.projectId).toBe('alpha');
+    expect(mcpConfig.projectRoot).toBe(root);
+    expect(mcpConfig.projectSource).toBe('cwd-marker');
+    expect(mcpConfig.registeredProjectRoot).toBe(realPath(root));
+    expect(mcpConfig.safety.safeForWrites).toBe(false);
+    expect(mcpConfig.safety.markerMissing).toBe(false);
+    expect(mcpConfig.safety.registeredProjectRootMissing).toBe(false);
+    expect(mcpConfig.safety.warnings).toContain(
+      `managed project data directory unavailable: ${path.join(dataDir, 'projects', 'alpha')}`,
+    );
+    expect(mcpConfig.operational).toEqual({
+      available: false,
+      blocker: 'managed-store-missing',
+      managedProjectDir: path.join(dataDir, 'projects', 'alpha'),
+    });
+    expect(fs.existsSync(path.join(dataDir, 'projects', 'alpha'))).toBe(false);
     expect((await git.status()).files).toHaveLength(0);
   });
 });

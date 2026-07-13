@@ -1185,22 +1185,29 @@ describe('mcp-config command', () => {
     const configDir = path.join(root, 'config');
     const dataDir = path.join(root, 'data');
     const beforeProject = await snapshotTree(root);
-    const result = await runMainWithArgs([
-      'node',
-      'xurgo-atlas',
-      'mcp-config',
-      '--json',
-      '--config-dir',
-      configDir,
-      '--data-dir',
-      dataDir,
-    ]);
+    const originalCwd = process.cwd();
+    let result: Awaited<ReturnType<typeof runMainWithArgs>>;
+    try {
+      process.chdir(root);
+      result = await runMainWithArgs([
+        'node',
+        'xurgo-atlas',
+        'mcp-config',
+        '--json',
+        '--config-dir',
+        configDir,
+        '--data-dir',
+        dataDir,
+      ]);
+    } finally {
+      process.chdir(originalCwd);
+    }
     const afterProject = await snapshotTree(root);
 
     try {
-      expect(result.exitCode).toBe(-1);
-      expect(result.stderr).toBe('');
-      const parsed = JSON.parse(result.stdout);
+      expect(result!.exitCode).toBe(-1);
+      expect(result!.stderr).toBe('');
+      const parsed = JSON.parse(result!.stdout);
       expect(parsed.serverName).toBe('xurgo-atlas');
       expect(parsed.projectId).toBeNull();
       expect(parsed.projectRoot).toBeNull();

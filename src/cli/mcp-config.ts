@@ -1,5 +1,10 @@
 import * as path from 'node:path';
-import { resolveProjectContext, ProjectResolutionError } from '../core/project-resolution.js';
+import {
+  inspectProjectOperationalState,
+  resolveProjectContext,
+  ProjectResolutionError,
+  type ProjectOperationalState,
+} from '../core/project-resolution.js';
 import { inspectGitIdentity } from '../core/git-identity.js';
 import {
   inspectResolvedRootSafetyContext,
@@ -64,7 +69,14 @@ interface McpProjectContext {
   cwd: string;
   git: Awaited<ReturnType<typeof inspectGitIdentity>>;
   safety: RootSafetySummary;
+  operational: McpOperationalStatus;
   rootLedger: RootLedgerSummary;
+}
+
+interface McpOperationalStatus {
+  available: boolean;
+  blocker: ProjectOperationalState['blocker'] | 'identity-unresolved' | 'marker-invalid' | 'unknown';
+  managedProjectDir: string | null;
 }
 
 interface McpJsonConfig {
@@ -80,6 +92,9 @@ interface McpJsonConfig {
   git: Awaited<ReturnType<typeof inspectGitIdentity>>;
   // Authoritative safety snapshot for mutating boundaries.
   safety: RootSafetySummary;
+  // Operational eligibility is distinct from a project identity binding. A
+  // discovered checkout may be readable but still lack its managed local store.
+  operational: McpOperationalStatus;
   // Descriptive root/worktree history for consumers and coordinators; it does
   // not override `safety.safeForWrites`.
   rootLedger: RootLedgerSummary;
@@ -106,7 +121,14 @@ async function resolveMcpProjectContext(
       configDir: options.configDir,
       dataDir: options.dataDir,
       cwd: options.cwd,
+      requireOperationalState: false,
     });
+    const operational = await inspectProjectOperationalState(
+      resolved.projectRoot,
+      resolved.projectId,
+      options.configDir,
+      options.dataDir,
+    );
     const rootContext = await inspectResolvedRootSafetyContext({
       projectId: resolved.projectId,
       projectRoot: resolved.projectRoot,
@@ -122,7 +144,8 @@ async function resolveMcpProjectContext(
       registeredProjectRoot: rootContext.registeredProjectRoot,
       cwd,
       git: rootContext.git,
-      safety: rootContext.safety,
+      safety: applyOperationalSafety(rootContext.safety, operational),
+      operational,
       rootLedger: rootContext.rootLedger,
     };
   } catch (error: unknown) {
@@ -138,15 +161,16 @@ async function resolveMcpProjectContext(
           safeForWrites: false,
           rootMismatch: false,
           ambiguous: true,
-          markerMissing: true,
+          markerMissing: error.code === 'identity-unresolved',
           markerMismatch: false,
-          registeredProjectRootMissing: true,
+          registeredProjectRootMissing: error.code === 'identity-unresolved',
           registeredProjectRootMismatch: false,
           daemonProjectRootMismatch: false,
           gitMismatch: false,
           gitUnavailable: !git.insideWorkTree,
-          warnings: buildUnresolvedSafetyWarnings(!git.insideWorkTree),
+          warnings: buildUnresolvedSafetyWarnings(error, !git.insideWorkTree),
         },
+        operational: unavailableOperationalStatus(error),
         rootLedger: unavailableRootLedgerSummary(),
       };
     }
@@ -170,6 +194,7 @@ function buildMcpJsonConfig(
     registeredProjectRoot: project.registeredProjectRoot,
     git: project.git,
     safety: project.safety,
+    operational: project.operational,
     rootLedger: project.rootLedger,
     startCommand: {
       command: 'xurgo-atlas',
@@ -210,6 +235,7 @@ export async function getMcpConfigOutput(options: McpConfigOptions): Promise<str
     `  git branch: ${project.git.branch ?? 'detached or unavailable'}`,
     `  git HEAD: ${project.git.head ?? 'unavailable'}`,
     `  safe for writes: ${project.safety.safeForWrites ? 'yes' : 'no'}`,
+    `  operational state: ${project.operational.available ? 'available' : project.operational.blocker}`,
     '',
     `Generic MCP client JSON:`,
     JSON.stringify(jsonConfig, null, 2),
@@ -225,10 +251,49 @@ export async function mcpConfigCommand(options: McpConfigOptions = {}): Promise<
   console.log(await getMcpConfigOutput(options));
 }
 
-function buildUnresolvedSafetyWarnings(gitUnavailable: boolean): string[] {
+function applyOperationalSafety(
+  safety: RootSafetySummary,
+  operational: ProjectOperationalState,
+): RootSafetySummary {
+  if (operational.available) {
+    return safety;
+  }
+
+  const warning = operational.blocker === 'managed-store-missing'
+    ? `managed project data directory unavailable: ${operational.managedProjectDir}`
+    : 'project documents or policy are unavailable for managed operations';
+
+  return {
+    ...safety,
+    // Identity remains authoritative, but no write-capable client may treat an
+    // unhydrated managed store as operationally safe.
+    safeForWrites: false,
+    warnings: [...safety.warnings, warning],
+  };
+}
+
+function unavailableOperationalStatus(error: ProjectResolutionError): McpOperationalStatus {
+  switch (error.code) {
+    case 'identity-unresolved':
+      return { available: false, blocker: 'identity-unresolved', managedProjectDir: null };
+    case 'marker-invalid':
+      return { available: false, blocker: 'marker-invalid', managedProjectDir: null };
+    default:
+      return { available: false, blocker: 'unknown', managedProjectDir: null };
+  }
+}
+
+function buildUnresolvedSafetyWarnings(
+  error: ProjectResolutionError,
+  gitUnavailable: boolean,
+): string[] {
   const warnings: string[] = [];
-  warnings.push('missing local project marker');
-  warnings.push('registered project root missing');
+  if (error.code === 'identity-unresolved') {
+    warnings.push('missing local project marker');
+    warnings.push('registered project root missing');
+  } else {
+    warnings.push(`project discovery failed: ${error.message}`);
+  }
   if (gitUnavailable) {
     warnings.push('git identity unavailable');
   }

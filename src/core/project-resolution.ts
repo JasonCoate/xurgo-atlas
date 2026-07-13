@@ -28,6 +28,12 @@ export interface ResolveProjectOptions {
   dataDir?: string;
   cwd?: string;
   allowRegistryDefault?: boolean;
+  /**
+   * Discovery surfaces can identify an adopted checkout before its local
+   * managed store exists. Operational callers keep the default fail-closed
+   * validation so they cannot serve or write an unhydrated project.
+   */
+  requireOperationalState?: boolean;
 }
 
 export interface ProjectMarker {
@@ -36,11 +42,35 @@ export interface ProjectMarker {
 }
 
 export class ProjectResolutionError extends Error {
-  constructor(message: string) {
+  constructor(
+    message: string,
+    public readonly code: ProjectResolutionErrorCode = 'unknown',
+  ) {
     super(message);
     this.name = 'ProjectResolutionError';
   }
 }
+
+export type ProjectResolutionErrorCode =
+  | 'identity-unresolved'
+  | 'identity-conflict'
+  | 'project-root-missing'
+  | 'project-structure-missing'
+  | 'managed-store-missing'
+  | 'marker-invalid'
+  | 'unknown';
+
+export type ProjectOperationalState =
+  | {
+      available: true;
+      blocker: null;
+      managedProjectDir: string;
+    }
+  | {
+      available: false;
+      blocker: 'project-structure-missing' | 'managed-store-missing';
+      managedProjectDir: string;
+    };
 
 export interface MarkerWriteResult {
   path: string;
@@ -122,6 +152,7 @@ export async function resolveProjectContext(
   if (options.projectRoot && !(await isDirectory(resolvedBase))) {
     throw new ProjectResolutionError(
       `Project root "${resolvedBase}" does not exist or is not a directory.`,
+      'project-root-missing',
     );
   }
   const registry = await Registry.load(options.configDir, options.dataDir);
@@ -140,6 +171,7 @@ export async function resolveProjectContext(
           `(${formatProjectResolutionSource(localIdentity.source)}). Explicit --project-id was "${resolved.projectId}". ` +
           'Run the command from the correct project root, or pass both --project-id and a matching ' +
           '--project-root if that is the intended advanced workflow.',
+        'identity-conflict',
       );
     }
 
@@ -148,6 +180,7 @@ export async function resolveProjectContext(
         `Could not resolve project identity from explicit project root "${resolvedBase}". ` +
           'Pass a project root or nested path inside the intended initialized project, or omit ' +
           '--project-root and use only --project-id from outside a project.',
+        'identity-unresolved',
       );
     }
 
@@ -160,6 +193,7 @@ export async function resolveProjectContext(
       markerResolution.projectId,
       options.configDir,
       options.dataDir,
+      options.requireOperationalState !== false,
     );
     return markerResolution;
   }
@@ -170,6 +204,7 @@ export async function resolveProjectContext(
       registryResolution.projectId,
       options.configDir,
       options.dataDir,
+      options.requireOperationalState !== false,
     );
     return registryResolution;
   }
@@ -198,7 +233,39 @@ export async function resolveProjectContext(
         : `Project at "${resolvedBase}" has not been initialized. ` +
             'Run "xurgo-atlas init --project-root . --project-id <id>" in the project root, ' +
             'or provide --project-id / --project-root explicitly.'),
+    'identity-unresolved',
   );
+}
+
+export async function inspectProjectOperationalState(
+  projectRoot: string,
+  projectId: string,
+  configDir?: string,
+  dataDir?: string,
+): Promise<ProjectOperationalState> {
+  const resolvedRoot = path.resolve(projectRoot);
+  const storage = new StoragePaths({ configDir, dataDir });
+  const managedProjectDir = storage.projectDataDir(projectId);
+
+  const hasPolicy = await fileExists(path.join(resolvedRoot, '.docs-policy.yml'));
+  const hasDocs = await isDirectory(path.join(resolvedRoot, 'docs'));
+  if (!hasPolicy && !hasDocs) {
+    return {
+      available: false,
+      blocker: 'project-structure-missing',
+      managedProjectDir,
+    };
+  }
+
+  if (!(await isDirectory(managedProjectDir))) {
+    return {
+      available: false,
+      blocker: 'managed-store-missing',
+      managedProjectDir,
+    };
+  }
+
+  return { available: true, blocker: null, managedProjectDir };
 }
 
 export function formatProjectResolutionSource(source: ProjectResolutionSource): string {
@@ -279,30 +346,43 @@ async function validateResolvedProject(
   projectId: string,
   configDir?: string,
   dataDir?: string,
+  requireOperationalState = true,
 ): Promise<void> {
   const resolvedRoot = path.resolve(projectRoot);
-  const storage = new StoragePaths({ configDir, dataDir });
 
   if (!(await isDirectory(resolvedRoot))) {
     throw new ProjectResolutionError(
       `Project root for "${projectId}" does not exist at ${resolvedRoot}. ` +
         'Run "xurgo-atlas init" in the project root or update the registered path.',
+      'project-root-missing',
     );
   }
 
-  const hasPolicy = await fileExists(path.join(resolvedRoot, '.docs-policy.yml'));
-  const hasDocs = await isDirectory(path.join(resolvedRoot, 'docs'));
-  if (!hasPolicy && !hasDocs) {
+  if (!requireOperationalState) {
+    return;
+  }
+
+  const operational = await inspectProjectOperationalState(
+    resolvedRoot,
+    projectId,
+    configDir,
+    dataDir,
+  );
+  if (operational.blocker === 'project-structure-missing') {
     throw new ProjectResolutionError(
       `Project at ${resolvedRoot} has not been initialized. ` +
         `Run "xurgo-atlas init --project-root ${resolvedRoot} --project-id ${projectId}" first.`,
+      'project-structure-missing',
     );
   }
 
-  if (!(await isDirectory(storage.projectDataDir(projectId)))) {
+  if (operational.blocker === 'managed-store-missing') {
     throw new ProjectResolutionError(
-      `Project "${projectId}" has not been initialized. ` +
-        `Run "xurgo-atlas init --project-root ${resolvedRoot} --project-id ${projectId}" first.`,
+      `Project "${projectId}" is recognized at ${resolvedRoot}, but managed operational state is unavailable ` +
+        `because ${operational.managedProjectDir} does not exist. ` +
+        `Daemon startup requires this managed state. Run "xurgo-atlas init --project-root ${resolvedRoot} ` +
+        `--project-id ${projectId}" only if you intend to create it.`,
+      'managed-store-missing',
     );
   }
 }
@@ -315,18 +395,21 @@ export async function readProjectMarker(markerPath: string): Promise<ProjectMark
     if (!parsed || typeof parsed !== 'object') {
       throw new ProjectResolutionError(
         `Invalid project marker at ${markerPath}: expected a JSON object.`,
+        'marker-invalid',
       );
     }
 
     if (parsed.schemaVersion !== 1) {
       throw new ProjectResolutionError(
         `Unsupported project marker schema at ${markerPath}: ${String(parsed.schemaVersion)}.`,
+        'marker-invalid',
       );
     }
 
     if (typeof parsed.projectId !== 'string' || parsed.projectId.trim().length === 0) {
       throw new ProjectResolutionError(
         `Invalid project marker at ${markerPath}: projectId is missing or empty.`,
+        'marker-invalid',
       );
     }
 
@@ -346,6 +429,7 @@ export async function readProjectMarker(markerPath: string): Promise<ProjectMark
     if (error instanceof SyntaxError) {
       throw new ProjectResolutionError(
         `Invalid project marker at ${markerPath}: ${error.message}`,
+        'marker-invalid',
       );
     }
 
