@@ -66,8 +66,5 @@
     "type": "git",
     "url": "git+https://github.com/xurgo/xurgo-atlas.git"
   },
-  "publishConfig": {
-    "registry": "https://npm.pkg.github.com"
-  },
   "license": "MIT"
 }
