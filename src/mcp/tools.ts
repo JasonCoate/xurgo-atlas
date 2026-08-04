@@ -263,6 +263,34 @@ const PreviewOrphanRemovalSchema = z.object({ projectId: z.string().min(1), prop
 const CommitOrphanRemovalSchema = z.object({ projectId: z.string().min(1), proposalId: z.string().min(1), approval: z.literal(ORPHAN_REMOVAL_APPROVAL), reviewDigest: z.string().regex(/^[0-9a-f]{64}$/), actor: z.string().trim().min(1) }).strict();
 const OrphanRemovalStatusSchema = PreviewOrphanRemovalSchema;
 
+const GovernanceSearchSchema = z.object({
+  projectId: z.string().min(1, 'projectId is required'),
+  query: z.string().min(1, 'query is required'),
+  category: z.string().optional(),
+  limit: z.number().int().positive().optional().default(10),
+});
+
+const GovernanceContextSchema = z.object({
+  projectId: z.string().min(1, 'projectId is required'),
+  taskDescription: z.string().min(1, 'taskDescription is required'),
+  maxChars: z.number().int().positive().optional().default(10000),
+});
+
+const GovernanceLookupSchema = z.object({
+  projectId: z.string().min(1, 'projectId is required'),
+  documentId: z.string().min(1, 'documentId is required'),
+});
+
+const GovernanceListSchema = z.object({
+  projectId: z.string().min(1, 'projectId is required'),
+  category: z.string().optional(),
+});
+
+const GovernanceLifecycleSchema = z.object({
+  projectId: z.string().min(1, 'projectId is required'),
+  documentId: z.string().min(1, 'documentId is required'),
+});
+
 const AtlasCommitArtifactRegistrationSchema = z.object({
   proposalId: z.string().min(1),
   approval: z.literal('APPROVE_ARTIFACT_REGISTRATION_COMMIT'),
@@ -469,6 +497,31 @@ export function registerTools(
         { name: 'docs.preview_orphan_removal', description: 'Read the immutable stored orphan-removal proposal, including its exact deletion diff, evidence, and review digest.', inputSchema: zodToJsonSchema(PreviewOrphanRemovalSchema) },
         { name: 'docs.commit_orphan_removal', description: 'Commit one reviewed orphan-removal proposal locally on managed main after exact proposal-bound approval and digest binding. actor is an asserted label, not an authentication claim.', inputSchema: zodToJsonSchema(CommitOrphanRemovalSchema) },
         { name: 'docs.orphan_removal_status', description: 'Read-only orphan-removal proposal and audit observation. It classifies the observation as not_applied, matching_commit, diverged, or unavailable; it never retries Git or finalizes recovery automatically.', inputSchema: zodToJsonSchema(OrphanRemovalStatusSchema) },
+        {
+          name: 'governance.search',
+          description: 'Search governance corpus documents by query with optional category filtering. Returns ranked results with metadata, snippets, and scores.',
+          inputSchema: zodToJsonSchema(GovernanceSearchSchema),
+        },
+        {
+          name: 'governance.context',
+          description: 'Assemble bounded governance context package for a task description. Returns primary and supporting documents, applicable rules, and source references within character limit.',
+          inputSchema: zodToJsonSchema(GovernanceContextSchema),
+        },
+        {
+          name: 'governance.lookup',
+          description: 'Look up a specific governance document by ID. Returns full document metadata including title, type, status, dependencies, and content.',
+          inputSchema: zodToJsonSchema(GovernanceLookupSchema),
+        },
+        {
+          name: 'governance.list',
+          description: 'List all governance documents with optional category filtering. Returns document metadata without full content for efficient browsing.',
+          inputSchema: zodToJsonSchema(GovernanceListSchema),
+        },
+        {
+          name: 'governance.lifecycle',
+          description: 'Get document lifecycle information including status, dependencies, tags, and modification history.',
+          inputSchema: zodToJsonSchema(GovernanceLifecycleSchema),
+        },
       ],
     };
   });
@@ -571,6 +624,16 @@ export function registerTools(
           return await handleSearch(project, rawArgs);
         case 'atlas.project_identity':
           return await handleAtlasProjectIdentity(project, rawArgs);
+        case 'governance.search':
+          return await handleGovernanceSearch(project, rawArgs);
+        case 'governance.context':
+          return await handleGovernanceContext(project, rawArgs);
+        case 'governance.lookup':
+          return await handleGovernanceLookup(project, rawArgs);
+        case 'governance.list':
+          return await handleGovernanceList(project, rawArgs);
+        case 'governance.lifecycle':
+          return await handleGovernanceLifecycle(project, rawArgs);
         default:
           return {
             content: [
@@ -4128,6 +4191,9 @@ export async function handleContextPack(project: Project, rawArgs: Record<string
 }
 
 export function handleCapabilities() {
+  const corpusDiscovery = new GovernanceCorpusDiscovery();
+  const corpus = corpusDiscovery.discover();
+
   return {
     content: [
       {
@@ -4167,6 +4233,18 @@ export function handleCapabilities() {
                 required: false,
               },
               externalVectorDatabaseDefault: false,
+            },
+            governance: {
+              corpusAvailable: corpus !== null,
+              documentCount: corpus?.metadata.totalDocuments || 0,
+              categories: corpus?.metadata.categories || [],
+              tools: [
+                'governance.search',
+                'governance.context',
+                'governance.lookup',
+                'governance.list',
+                'governance.lifecycle',
+              ],
             },
           },
           null,
@@ -4470,6 +4548,176 @@ function getManifestGuidedContextPaths(manifestData: Record<string, unknown> | n
   }
 
   return paths;
+}
+
+// ── Governance Tool Handlers ───────────────────────────────────────────
+
+import { GovernanceSearchIndex } from '../core/governance-search.js';
+import { GovernanceContextAssembler } from '../core/governance-context.js';
+import { GovernanceLifecycleTracker } from '../core/governance-lifecycle.js';
+import { GovernanceCorpusDiscovery } from '../core/governance-corpus.js';
+
+async function handleGovernanceSearch(
+  project: Project,
+  rawArgs: Record<string, unknown>,
+) {
+  const args = GovernanceSearchSchema.parse(rawArgs);
+  const searchIndex = new GovernanceSearchIndex();
+
+  try {
+    await searchIndex.index();
+    const results = searchIndex.search(args.query, args.category, args.limit);
+
+    return {
+      content: [
+        {
+          type: 'text',
+          text: JSON.stringify(results, null, 2),
+        },
+      ],
+    };
+  } finally {
+    searchIndex.close();
+  }
+}
+
+async function handleGovernanceContext(
+  project: Project,
+  rawArgs: Record<string, unknown>,
+) {
+  const args = GovernanceContextSchema.parse(rawArgs);
+  const assembler = new GovernanceContextAssembler();
+
+  try {
+    const context = await assembler.assembleContext(args.taskDescription, args.maxChars);
+
+    return {
+      content: [
+        {
+          type: 'text',
+          text: JSON.stringify(context, null, 2),
+        },
+      ],
+    };
+  } finally {
+    assembler.close();
+  }
+}
+
+async function handleGovernanceLookup(
+  project: Project,
+  rawArgs: Record<string, unknown>,
+) {
+  const args = GovernanceLookupSchema.parse(rawArgs);
+  const corpusDiscovery = new GovernanceCorpusDiscovery();
+  const document = corpusDiscovery.getDocumentById(args.documentId);
+
+  if (!document) {
+    return {
+      content: [
+        {
+          type: 'text',
+          text: JSON.stringify({
+            error: `Governance document not found: ${args.documentId}`,
+          }),
+        },
+      ],
+      isError: true,
+    };
+  }
+
+  return {
+    content: [
+      {
+        type: 'text',
+        text: JSON.stringify(document, null, 2),
+      },
+    ],
+  };
+}
+
+async function handleGovernanceList(
+  project: Project,
+  rawArgs: Record<string, unknown>,
+) {
+  const args = GovernanceListSchema.parse(rawArgs);
+  const corpusDiscovery = new GovernanceCorpusDiscovery();
+  const corpus = corpusDiscovery.discover();
+
+  if (!corpus) {
+    return {
+      content: [
+        {
+          type: 'text',
+          text: JSON.stringify({
+            error: 'Governance corpus not available',
+          }),
+        },
+      ],
+      isError: true,
+    };
+  }
+
+  let documents = corpus.documents;
+  if (args.category) {
+    documents = documents.filter(doc => doc.type === args.category);
+  }
+
+  const documentList = documents.map(doc => ({
+    id: doc.id,
+    title: doc.title,
+    path: doc.path,
+    type: doc.type,
+    status: doc.status,
+    tags: doc.tags,
+    wordCount: doc.wordCount,
+    lastModified: doc.lastModified,
+  }));
+
+  return {
+    content: [
+      {
+        type: 'text',
+        text: JSON.stringify({
+          totalDocuments: documentList.length,
+          category: args.category || 'all',
+          documents: documentList,
+        }, null, 2),
+      },
+    ],
+  };
+}
+
+async function handleGovernanceLifecycle(
+  project: Project,
+  rawArgs: Record<string, unknown>,
+) {
+  const args = GovernanceLifecycleSchema.parse(rawArgs);
+  const lifecycleTracker = new GovernanceLifecycleTracker();
+  const lifecycle = lifecycleTracker.getDocumentLifecycle(args.documentId);
+
+  if (!lifecycle) {
+    return {
+      content: [
+        {
+          type: 'text',
+          text: JSON.stringify({
+            error: `Governance document not found: ${args.documentId}`,
+          }),
+        },
+      ],
+      isError: true,
+    };
+  }
+
+  return {
+    content: [
+      {
+        type: 'text',
+        text: JSON.stringify(lifecycle, null, 2),
+      },
+    ],
+  };
 }
 
 // ── Front matter parser ────────────────────────────────────────────────
