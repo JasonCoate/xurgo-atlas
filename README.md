@@ -1,5 +1,7 @@
 # Xurgo Atlas
 
+[![npm version](https://img.shields.io/npm/v/xurgo-atlas)](https://www.npmjs.com/package/xurgo-atlas)
+
 Xurgo Atlas is a standalone, local-first documentation and project-context service for AI-assisted development. It gives developers and MCP-capable AI clients a governed way to read project docs, find context, and propose documentation changes with an audit trail.
 
 Atlas complements your repository. It does not replace Git, your source tree, your issue tracker, or your AI client.
