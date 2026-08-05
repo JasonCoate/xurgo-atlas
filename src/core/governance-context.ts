@@ -52,13 +52,25 @@ export class GovernanceContextAssembler {
     let truncated = false;
 
     for (const result of searchResults.results) {
-      const doc = corpus.documents.find(d => d.id === result.id);
-      if (!doc || !doc.content) continue;
+      const found = corpus.documents.find(d => d.id === result.id);
+      if (!found || !found.content) continue;
 
-      const docChars = doc.content.length;
+      let docContent: string = found.content;
+      let doc: GovernanceDocument = found;
+      let docChars = docContent.length;
+
       if (totalChars + docChars > maxChars) {
-        truncated = true;
-        break;
+        if (totalChars === 0) {
+          // Always include the top-ranked document even when it exceeds the
+          // character budget; truncate it to fit the limit so callers never
+          // receive an empty context for a relevant query.
+          docContent = found.content.slice(0, maxChars);
+          doc = { ...found, content: docContent };
+          docChars = docContent.length;
+        } else {
+          truncated = true;
+          continue;
+        }
       }
 
       const sourceRef = {

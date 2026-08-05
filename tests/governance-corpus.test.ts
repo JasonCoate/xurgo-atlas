@@ -156,6 +156,19 @@ describe('Governance Corpus', () => {
         freshAssembler.close();
       }
     });
+
+    it('should still return the top document when the first match exceeds the character budget', async () => {
+      const tinyLimit = 200;
+      const context = await contextAssembler.assembleContext(
+        'governance and policies',
+        tinyLimit,
+      );
+      expect(context.primaryDocuments.length).toBeGreaterThan(0);
+      expect(context.totalChars).toBeLessThanOrEqual(tinyLimit);
+      expect(context.truncated).toBe(true);
+      const includedContent = context.primaryDocuments[0].content ?? '';
+      expect(includedContent.length).toBeLessThanOrEqual(tinyLimit);
+    });
   });
 
   describe('Lifecycle Tracking', () => {
