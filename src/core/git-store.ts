@@ -181,19 +181,25 @@ export class GitStore {
 
     const git = simpleGit({ baseDir: this.workDir });
 
-    // Fetch all branches
+    // Fetch all branches so the workdir's remote refs are never stale.
+    // The workdir is a scratch clone of the bare store; without this resync
+    // the checkout below can run against an origin that has already moved on.
     try {
-      await git.fetch('origin', '--all');
+      await git.fetch(['--all']);
     } catch {
       // First fetch may fail if repo is empty
     }
 
-    // Check if branch exists remotely
+    // Check if branch exists locally and/or remotely
     let branchExists = false;
+    let remoteBranchExists = false;
     try {
       const branches = await git.branch(['-a']);
       branchExists = branches.all.some(
         (b: string) => b === branch || b === `origin/${branch}` || b === `remotes/origin/${branch}`,
+      );
+      remoteBranchExists = branches.all.some(
+        (b: string) => b === `origin/${branch}` || b === `remotes/origin/${branch}`,
       );
     } catch {
       // No branches yet
@@ -229,6 +235,22 @@ export class GitStore {
       await git.raw(['clean', '-fd']);
     } catch {
       // No commits yet — nothing to reset or clean
+    }
+
+    // Bring the local branch in line with the freshly fetched origin ref.
+    // The local branch is a scratch mirror of origin/<branch>; it must
+    // fast-forward so operations never run against stale state. If the
+    // local branch has diverged from origin, surface the failure instead
+    // of silently operating on an unreconciled base.
+    if (remoteBranchExists) {
+      try {
+        await git.merge(['--ff-only', `origin/${branch}`]);
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : String(error);
+        throw new Error(
+          `Managed branch "${branch}" diverged from origin/${branch}; refusing to run withWorkDir on an unreconciled branch (${detail})`,
+        );
+      }
     }
 
     const result = await fn(git, this.workDir);

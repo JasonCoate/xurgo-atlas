@@ -5873,6 +5873,57 @@ describe('GitStore workdir cleanup', () => {
     expect(exportDocs).not.toContain('dirty-file.md');
   });
 
+  it('should resync the workdir from the bare store before a withWorkDir operation', async () => {
+    const project = await Project.init({
+      projectRoot: tmpDir,
+      projectId: 'test-project',
+      configDir: path.join(tmpDir, 'config'),
+      dataDir: path.join(tmpDir, 'data'),
+    });
+
+    const repoDir = project.gitStore.repoDir;
+    const workDir = path.join(repoDir, 'workdir');
+    const filePath = 'docs/README.md';
+
+    const original = (await project.readFile('main', filePath)).content ?? '';
+
+    // Advance the bare store from OUTSIDE the workdir, as an independent
+    // writer would. Project.init has already left the workdir checked out
+    // on the older main.
+    const externalDir = path.join(tmpDir, 'external-clone');
+    await fs.promises.mkdir(externalDir, { recursive: true });
+    const external = simpleGit({ baseDir: externalDir });
+    await external.clone(repoDir, externalDir);
+    const updated = original + '\n## Remote advancement\n';
+    await fs.promises.writeFile(path.join(externalDir, filePath), updated, 'utf-8');
+    await external.add(filePath);
+    await external.commit('Advance origin outside the workdir');
+    await external.push('origin', 'main');
+
+    // The workdir branch still lags the bare store until a withWorkDir
+    // operation resyncs it.
+    const workdirHead = (await simpleGit({ baseDir: workDir }).revparse(['main'])).trim();
+    const bareHead = (await project.gitStore.getBranchHead('main')) ?? '';
+    expect(workdirHead).not.toBe(bareHead);
+
+    // A withWorkDir write must first resync onto the remote commit. Against
+    // a stale workdir base its push would be a non-fast-forward rejection,
+    // so the operation would throw and the change would never land.
+    const remoteContent = (await project.readFile('main', filePath)).content ?? '';
+    const nextContent = remoteContent + '\n## Workdir saw remote advance\n';
+
+    const committed = await project.gitStore.applyAndCommit(
+      'main',
+      filePath,
+      nextContent,
+      'Write on top of remote advancement',
+    );
+    expect(committed.hash.length).toBe(40);
+
+    const finalContent = (await project.readFile('main', filePath)).content ?? '';
+    expect(finalContent).toBe(nextContent);
+  });
+
   it('should clean up atlas-branded temporary patch files after patch validation and commit', async () => {
     const project = await Project.init({
       projectRoot: tmpDir,
