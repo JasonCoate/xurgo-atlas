@@ -1,5 +1,18 @@
 # Agent Instructions for Xurgo Atlas
 
+## Session start
+
+Boot per the corpus-owned sequence in `~/.xurgo/governance/xurgo-ecosystem/AGENTS.md` ("Session start (coordination)"): corpus `STATUS.md` → `standards/fresh-boot-sequence-hub.md` → `policies/cross-product-coordination-process-v01.md` → (if the task needs the Authority–Studio link) `operations/opencode-coordinator-compatibility-runbook-v01.md` for A4 lease mechanics. Then read THIS file and `STATUS.md` for current focus.
+
+## Corpus queries
+
+When searching the governance corpus (`~/.xurgo/governance/xurgo-ecosystem/`), **always use the Python utility scripts**, never raw grep/rg:
+
+- `python3 corpus-query.py "<search terms>"` — full-text search over all corpus markdown
+- `python3 corpus-context-bundle.py "<situation>"` — pre-bundled context for a given situation (bounded by `CORPUS_BOOT_CEILING_CHARS = 8000`)
+
+These scripts live in the corpus root. They handle path resolution, result formatting, and budget enforcement. Raw `rg`/`grep` misses formatting, budget constraints, and context-routing logic.
+
 ## Documentation Safety Rules
 
 This project uses **Xurgo Atlas** for safe, versioned, auditable documentation management.
@@ -64,3 +77,7 @@ Historical documentation under `docs/spec/**` may not all appear in the active A
 | View history | `docs.history` |
 | Restore a file | `docs.restore_file` |
 | Export documentation | `docs.export` |
+
+## Completion-return contract
+
+Any session that may hand back to a Coordinator (or be resumed) returns via the corpus-owned five-section completion-return contract: DISPOSITION → REPORT → DECISIVE EVIDENCE → SCOPE-SAFETY → NEXT DECISION. Start from `~/.xurgo/governance/xurgo-ecosystem/templates/default-handoff-preamble-v01.md` (the stable ecosystem context preamble — always prepend), then fill the session-specific content from `~/.xurgo/governance/xurgo-ecosystem/templates/handoff-and-rehydration-bootstrap-v01.md` and `~/.xurgo/governance/xurgo-ecosystem/standards/coordinator-continuity-guide.md`, not a hand-written approximation.
